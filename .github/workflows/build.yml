@@ -4,6 +4,13 @@ name: Build Tweak
 # 你在 Windows 上写完代码 push 上来就行，不用本地装任何工具链。
 #
 # 产物：Actions 页面 → 这次 run → 底部 Artifacts → 下载 WeChatGlassGroups-deb
+#
+# ⚠️ 不要用 working-directory 指定工程目录！
+#    GitHub 会把仓库内容放进 /Users/runner/work/<仓库名>/<仓库名>，
+#    而本仓库内部还有一层同名文件夹 WeChatGlassGroups/，
+#    再叠加 working-directory 就会变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
+#    → 目录不存在 → shell 启动失败 → 0 秒报错。
+#    所以下面统一用 run 里的 cd 进工程目录。
 
 on:
   push:
@@ -26,19 +33,14 @@ jobs:
 
       # ---------------------------------------------------------------------
       # 诊断：theos-action 有时不会把 $THEOS 传给后面的步骤，
-      # 那样 make 会在 0 秒内就失败（连 Theos 的 common.mk 都找不到）。
-      # 这一段把真实路径找出来，并写进 $GITHUB_ENV 给后续步骤用。
+      # 那样 make 会连 Theos 的 common.mk 都找不到。这里把真实路径找出来，
+      # 写进 $GITHUB_ENV 给后续步骤用。
       # ---------------------------------------------------------------------
       - name: Locate Theos
         run: |
           echo "THEOS(env) = '${THEOS}'"
-          echo "--- 常见安装位置 ---"
           for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" "/opt/theos" "/Users/runner/theos"; do
-            if [ -d "$d/makefiles" ]; then
-              echo "FOUND: $d"
-            else
-              echo "not here: $d"
-            fi
+            if [ -d "$d/makefiles" ]; then echo "FOUND: $d"; else echo "not here: $d"; fi
           done
 
           if [ -z "$THEOS" ] || [ ! -d "$THEOS/makefiles" ]; then
@@ -54,12 +56,9 @@ jobs:
             echo "→ 沿用环境里的 $THEOS"
           fi
 
-          echo "GITHUB_ENV 已写入"
-
       - name: Prepare SDK
         run: |
           echo "THEOS=$THEOS"
-          echo "--- 自带 SDK ---"
           ls -la "$THEOS/sdks" || true
           if [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
             echo "Theos 没有自带 SDK，从 Xcode 拷贝一份"
@@ -73,15 +72,18 @@ jobs:
       - name: Show toolchain
         run: |
           echo "THEOS=$THEOS"
-          echo "PATH=$PATH"
+          echo "--- 仓库根目录 ---"
+          ls -la
+          echo "--- 工程目录 ---"
+          ls -la WeChatGlassGroups
           which make
           make --version | head -n1
           xcodebuild -version
           uname -m
 
       - name: Build package
-        working-directory: WeChatGlassGroups
         run: |
+          cd WeChatGlassGroups
           echo "=== 开始编译 ==="
           make clean 2>&1 || true
           make package FINALPACKAGE=1 DEBUG=0 2>&1
@@ -90,9 +92,9 @@ jobs:
       # 很多人卡在"装上了但插件不生效"，十次有九次是架构或签名不对。
       - name: Verify binary
         if: success()
-        working-directory: WeChatGlassGroups
         run: |
           set -e
+          cd WeChatGlassGroups
           DYLIB="$(find .theos/obj -name 'WeChatGlassGroups.dylib' | head -n1)"
           echo "dylib: $DYLIB"
           file "$DYLIB"
@@ -111,11 +113,10 @@ jobs:
 
       - name: Collect deb
         if: success()
-        working-directory: WeChatGlassGroups
         run: |
-          mkdir -p ../out
-          cp packages/*.deb ../out/ 2>/dev/null || cp *.deb ../out/
-          ls -la ../out
+          mkdir -p out
+          cp WeChatGlassGroups/packages/*.deb out/ 2>/dev/null || cp WeChatGlassGroups/*.deb out/
+          ls -la out
 
       - name: Upload deb
         if: success()
