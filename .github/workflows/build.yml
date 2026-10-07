@@ -1,122 +1,133 @@
 name: Build Tweak
 
 # 在 macOS runner 上编译 Theos 插件。
-# 你在 Windows 上写完代码 push 上来就行，不用本地装任何工具链。
-#
 # 产物：Actions 页面 → 这次 run → 底部 Artifacts → 下载 WeChatGlassGroups-deb
 #
-# ⚠️ 已经踩过的坑，改这个文件时别再犯（每条都真实翻车过）：
+# ⚠️ 已踩过的坑，改这个文件时别再犯（每条都真实翻车过）：
 #
-#   1) 不要用 working-directory 指定工程目录！
-#      GitHub 把仓库内容放在 /Users/runner/work/<仓库名>/<仓库名>，
-#      本仓库内部又有一层同名文件夹 WeChatGlassGroups/，
-#      再叠加 working-directory 就变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
-#      → 目录不存在 → shell 直接启动失败。所以统一用 run 里的 cd。
+#   1) 不要用 working-directory 指向工程目录。GitHub 把仓库放在
+#      /Users/runner/work/<仓库名>/<仓库名>，仓库内又有一层 WeChatGlassGroups/，
+#      叠加后会变成三层同名路径 → 目录不存在 → shell 启动失败。统一用 cd。
 #
-#   2) GitHub Actions 的 bash 默认带 -e（任一命令非零退出就整步失败）。
-#      所以"纯诊断步骤"极其危险：一句 command -v make 找不到 make 就能让整轮变红。
-#      → 结论：不要加诊断步骤，需要的信息用 set +e 包起来，或者写进编译步骤里。
+#   2) GitHub Actions 的 bash 默认带 -e，任何命令非零退出就整步失败。
+#      所以"纯诊断步骤"很危险（一句 command -v 就能让整轮变红）。
 #
-#   3) 不要覆盖 env.PATH。runner 自带 PATH 已包含 /usr/bin（make 在这里）和 Xcode。
+#   3) 不要覆盖 env.PATH。
 #
-#   4) 不要改成 macos-13！那是 x86_64 runner，编不出 arm64e，装到 iPhone 14 Pro 上无效。
+#   4) 不要改成 macos-13：那是 x86_64 runner，编不出 arm64e，装 iPhone 14 Pro 无效。
+#
+#   5) 失败信息要能被读到：用 ::error:: 写注解、用 tee 落盘日志。
+#      否则只能看到 "exit code 1"，什么线索都没有（已经吃过这个亏）。
 
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:        # 也可以在网页上点按钮手动触发
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: macos-14
 
     steps:
-      # 不需要单独"安装 Theos"的 action：
-      # 下面的 Find Theos 步骤会直接找到 runner 镜像里自带的 Theos
-      # （通常在 /Users/runner/theos）。找不到时才去克隆一份。
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 找到 Theos（runner 镜像通常自带），找不到就克隆一份
       - name: Find Theos
         run: |
           set +e
-          if [ -n "$THEOS" ] && [ -f "$THEOS/makefiles/common.mk" ]; then
-            FOUND="$THEOS"
-          fi
+          FOUND=""
+          if [ -n "$THEOS" ] && [ -f "$THEOS/makefiles/common.mk" ]; then FOUND="$THEOS"; fi
           for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" /opt/theos /Users/runner/theos; do
             if [ -z "$FOUND" ] && [ -f "$d/makefiles/common.mk" ]; then FOUND="$d"; fi
           done
-
           if [ -z "$FOUND" ]; then
-            echo "未找到 Theos，克隆一份（需要几分钟）"
+            echo "未找到 Theos，克隆一份"
             git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos" || true
             FOUND="$HOME/theos"
           fi
-
           echo "THEOS=$FOUND" >> "$GITHUB_ENV"
           echo "使用 Theos: $FOUND"
-
-          # 关键：sdks 是 submodule，里面才是 iPhoneOS 16.x SDK。
-          # 没同步的话编译会报找不到 SDK。
+          # sdks 是 submodule，里面才是 iPhoneOS SDK
           if [ -d "$FOUND/.git" ] && [ ! -d "$FOUND/sdks/iPhoneOS16.4.sdk" ]; then
             echo "同步 sdks submodule..."
             git -C "$FOUND" submodule update --init --recursive || true
           fi
-          echo "--- sdks 目录 ---"
-          ls -la "$FOUND/sdks" 2>/dev/null || echo "sdks 目录不存在"
+          echo "--- sdks ---"
+          ls -la "$FOUND/sdks" 2>/dev/null || echo "sdks 不存在"
           exit 0
 
-      # 默认不做任何事：theos/theos 的 sdks 仓库自带 iPhoneOS 16.x SDK
-      # （含私有框架 tbd）。只有在确实没 SDK 时才从 Xcode 兜底拷贝，
-      # 而且兜底失败也不算错误 —— 让编译步骤自己去报真正的问题。
-      - name: Prepare SDK
+      # 定位 make，并把结果写进 GITHUB_ENV / GITHUB_PATH
+      - name: Locate make
         run: |
           set +e
-          echo "THEOS=$THEOS"
-          ls -la "$THEOS/sdks" || true
-          if [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-            SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)"
-            if [ -n "$SDK_PATH" ]; then
-              echo "Theos 无自带 SDK，从 Xcode 拷贝: $SDK_PATH"
-              mkdir -p "$THEOS/sdks"
-              cp -R "$SDK_PATH" "$THEOS/sdks/iPhoneOS16.4.sdk" || true
-            else
-              echo "警告：既没有自带 SDK，也拿不到 Xcode 的 SDK"
-            fi
+          echo "当前 PATH=$PATH"
+          MAKE_BIN="$(command -v make 2>/dev/null)"
+          if [ -z "$MAKE_BIN" ] && [ -x /usr/bin/make ]; then MAKE_BIN=/usr/bin/make; fi
+          if [ -z "$MAKE_BIN" ]; then
+            for c in /Library/Developer/CommandLineTools/usr/bin/make \
+                     /Applications/Xcode.app/Contents/Developer/usr/bin/make; do
+              if [ -x "$c" ]; then MAKE_BIN="$c"; break; fi
+            done
           fi
-          ls -la "$THEOS/sdks" || true
+          if [ -n "$MAKE_BIN" ]; then
+            echo "找到 make: $MAKE_BIN"
+            echo "MAKE_BIN=$MAKE_BIN" >> "$GITHUB_ENV"
+            dirname "$MAKE_BIN" >> "$GITHUB_PATH"
+          else
+            echo "⚠️ 找不到 make"
+          fi
           exit 0
 
+      # ---------------------------------------------------------------------
+      # 编译。关键点：
+      #   - 把完整输出 tee 到 build_output.txt，失败时切成 ::error:: 注解，
+      #     这样不用登录 GitHub 也能从 API 读到真正的报错行。
+      #   - 不要用 make clean（Theos 的 clean 在没有构建目录时可能返回非零）。
+      # ---------------------------------------------------------------------
       - name: Build package
         run: |
+          set +e
+          MAKE="${MAKE_BIN:-make}"
+          echo "使用: $MAKE"
+          "$MAKE" --version 2>&1 | head -n 1
+
           cd WeChatGlassGroups
           echo "=== 开始编译 ==="
-          echo "THEOS=$THEOS"
-          make clean || true
-          make package FINALPACKAGE=1 DEBUG=0
+          "$MAKE" package FINALPACKAGE=1 DEBUG=0 2>&1 | tee ../build_output.txt
+          STATUS=${PIPESTATUS[0]}
+          echo "=== make 退出码: $STATUS ==="
 
-      # 关键校验：确认 dylib 真的编成了 arm64e，且签名没丢。
-      # "装上了但插件不生效"十次有九次是架构或签名不对。
-      # 这一段全部容错，绝不能因为日志命令失败而挡住产物。
-      - name: Verify binary
-        if: success()
+          if [ "$STATUS" -ne 0 ]; then
+            # 把报错内容变成注解，API 就能读到（无需登录）
+            {
+              echo "make 失败，退出码 $STATUS。最后 15 行："
+              tail -n 15 ../build_output.txt
+            } | while IFS= read -r line; do
+              line="${line//'%'/'%25'}"
+              line="${line//$'\r'/'%0D'}"
+              line="${line//$'\n'/'%0A'}"
+              echo "::error::$line"
+            done
+            exit 1
+          fi
+          exit 0
+
+      # 校验是否真的产出了 deb 和正确架构的 dylib
+      - name: Verify build output
+        if: always()
         run: |
           set +e
-          cd WeChatGlassGroups
-          DYLIB="$(find .theos/obj -name 'WeChatGlassGroups.dylib' | head -n1)"
-          echo "dylib: $DYLIB"
-          file "$DYLIB"
-          echo "--- 期望看到 arm64e ---"
-          lipo -archs "$DYLIB"
-          echo "--- 签名信息 ---"
-          codesign -dvvv "$DYLIB" 2>&1
-          echo "--- 链接了哪些库 ---"
-          otool -L "$DYLIB"
-          echo "--- 检查是否误链 Swift 运行时（链了就会崩） ---"
-          if otool -L "$DYLIB" 2>/dev/null | grep -q swift; then
-            echo "⚠️ 警告：链接了 Swift 运行时"
-          else
-            echo "OK：没有链接 Swift 运行时"
+          echo "=== 找 dylib ==="
+          find WeChatGlassGroups/.theos -name '*.dylib' 2>/dev/null || echo "没有 dylib"
+          echo "=== 找 deb ==="
+          ls -la WeChatGlassGroups/packages 2>/dev/null || echo "没有 packages 目录"
+          DYLIB="$(find WeChatGlassGroups/.theos -name 'WeChatGlassGroups.dylib' 2>/dev/null | head -n1)"
+          if [ -n "$DYLIB" ]; then
+            echo "--- 架构（期望 arm64e）---"
+            lipo -archs "$DYLIB"
+            echo "--- 链接的库 ---"
+            otool -L "$DYLIB"
           fi
           exit 0
 
@@ -127,7 +138,6 @@ jobs:
           mkdir -p out
           cp WeChatGlassGroups/packages/*.deb out/ 2>/dev/null
           cp WeChatGlassGroups/*.deb out/ 2>/dev/null
-          echo "--- 收集结果 ---"
           ls -la out
           exit 0
 
@@ -139,11 +149,11 @@ jobs:
           path: out/*.deb
           if-no-files-found: error
 
-      # 编译中间产物，出问题时用它排错
-      - name: Upload build log
+      # 完整编译日志：失败时这就是唯一的线索来源
+      - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: WeChatGlassGroups/.theos/
+          name: build-output
+          path: build_output.txt
           if-no-files-found: ignore
