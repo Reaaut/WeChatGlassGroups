@@ -46,7 +46,13 @@ extern NSString *const WGGDefaultsKeyGroupMap;      // NSDictionary<wxid, groupN
 @property (nonatomic, copy, readonly) NSArray<NSString *> *groupTitles;
 /// 当前选中分组。
 @property (nonatomic, assign, readonly) WGGGroup selectedGroup;
-@property (nonatomic, weak, nullable) id<GlassGroupPanelDelegate> delegate;
+
+/// delegate 用 assign 而不是 weak —— 本工程是 MRC（Makefile 里 -fno-objc-arc），
+/// MRC 下没有 weak 概念，写 weak 会编译报
+/// "cannot synthesize weak property in file using manual reference counting"。
+/// assign 在 MRC 下就是"不持有"，正是 delegate 需要的行为：
+/// 面板由父视图持有，delegate（视图控制器）生命周期比面板长。
+@property (nonatomic, assign, nullable) id<GlassGroupPanelDelegate> delegate;
 
 /// 玻璃参数（改了立刻重绘，同时写回 NSUserDefaults）
 @property (nonatomic, assign) CGFloat glassAlpha;      // 0.0 ~ 1.0，默认 1.0
