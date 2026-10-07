@@ -80,10 +80,28 @@ jobs:
           exit 0
 
       # ---------------------------------------------------------------------
+      # Theos 打包依赖：dpkg-deb（打 deb 包）+ ldid（给 dylib 签名）。
+      # macOS runner 默认都没有，必须 brew 装。之前编译+链接全过，
+      # 就是死在 Stripping 之后的打包/签名步骤。
+      # ---------------------------------------------------------------------
+      - name: Install packaging tools
+        run: |
+          set +e
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew install dpkg 2>&1 | tail -n 5 || true
+          brew install ldid 2>&1 | tail -n 5 || true
+          echo "--- dpkg-deb ---"
+          command -v dpkg-deb || ls -la "$(brew --prefix 2>/dev/null)/bin/dpkg-deb" 2>/dev/null || echo "dpkg-deb 仍不可用"
+          echo "--- ldid ---"
+          command -v ldid || ls -la "$(brew --prefix 2>/dev/null)/bin/ldid" 2>/dev/null || echo "ldid 仍不可用"
+          exit 0
+
+      # ---------------------------------------------------------------------
       # 编译。关键点：
       #   - 把完整输出 tee 到 build_output.txt，失败时切成 ::error:: 注解，
       #     这样不用登录 GitHub 也能从 API 读到真正的报错行。
       #   - 不要用 make clean（Theos 的 clean 在没有构建目录时可能返回非零）。
+      #   - 失败时：最后 40 行 + 全日志里所有 error 相关行都做成注解。
       # ---------------------------------------------------------------------
       - name: Build package
         run: |
@@ -99,16 +117,18 @@ jobs:
           echo "=== make 退出码: $STATUS ==="
 
           if [ "$STATUS" -ne 0 ]; then
-            # 把报错内容变成注解，API 就能读到（无需登录）
-            {
-              echo "make 失败，退出码 $STATUS。最后 15 行："
-              tail -n 15 ../build_output.txt
-            } | while IFS= read -r line; do
+            emit() {
+              local line="$1"
               line="${line//'%'/'%25'}"
               line="${line//$'\r'/'%0D'}"
               line="${line//$'\n'/'%0A'}"
               echo "::error::$line"
-            done
+            }
+            emit "make 失败，退出码 $STATUS。===== 最后 40 行 ====="
+            tail -n 40 ../build_output.txt | while IFS= read -r line; do emit "$line"; done
+            emit "===== 全日志中的 error 相关行 ====="
+            grep -n -i -E 'error|no such file|command not found|not found|failed|invalid|denied' ../build_output.txt \
+              | tail -n 30 | while IFS= read -r line; do emit "$line"; done
             exit 1
           fi
           exit 0
