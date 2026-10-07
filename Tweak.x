@@ -12,15 +12,19 @@
 //      即使类名猜错，这部分也只是不生效，不会崩微信。
 //
 //  (B)【数据源钩子】依赖真实类名/属性名，必须先用 Discovery 模块在真机上确认。
-//      见文件末尾 "阶段二" 区域，默认关闭（需要 -DWGG_STAGE2=1 才编译）。
+//      见文件末尾 "阶段二" 区域，**目前整段用 // 注释掉**。
 //      原因：微信刷新会话列表时，很可能"取数组"和"算行数"是两条独立路径。
 //      只拦其中一个会造成 filtered.count != rows 的不一致 → index 越界崩溃。
 //      所以必须先在真机上确认「谁的 -numberOfRowsInSection: 和 -cellForRowAtIndexPath:
 //      在给首页 table 供数」，然后成对地拦这三个方法。
 //
+//  ⚠️ 不要用 #if 去开关 %hook！Theos 的 Logos 预处理器不认 #if，
+//     它照样会生成 hook 代码，但方法体被剔除了，结果是链接错误：
+//     "function ... has internal linkage but is not defined"。
+//     第一次编译就是死在这个坑上。开关 %hook 只能用 // 注释。
+//
 //  编译开关（Makefile 里加）：
 //      -DWGG_DISCOVERY=1   打开运行时探测（阶段一必开）
-//      -DWGG_STAGE2=1      打开数据源过滤（阶段二，确认类名后再开）
 //
 
 #import <UIKit/UIKit.h>
@@ -39,8 +43,6 @@ static BOOL WGGLooksLikeConversationController(UIViewController *vc);
 static BOOL WGGIsExcludedController(UIViewController *vc);
 static void WGGInstallPanelIfNeeded(UIViewController *vc);
 static void WGGApplyTableInset(UIViewController *vc);
-static void WGGRefreshPanelCountsIfPossible(UIViewController *vc);
-static NSArray *WGGCurrentConversations(void);
 #if WGG_RESTYLE_SEARCHBAR
 static void WGGRestyleSearchBarIfFound(UIView *root);
 #endif
@@ -227,35 +229,15 @@ static void WGGApplyTableInset(UIViewController *vc) {
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-/// 从"当前的会话数组"里算各组计数 / 未读并刷新面板。
-/// 阶段一拿不到会话数组（那是私有属性），所以先留空；
-/// 阶段二接上真实数据源后这里就有数据了。
-static void WGGRefreshPanelCountsIfPossible(UIViewController *vc) {
-    GlassGroupPanel *panel = objc_getAssociatedObject(vc, kWGGPanelKey);
-    if (!panel) return;
-    NSArray *conversations = WGGCurrentConversations();
-    if (conversations) {
-        WGGGroupStore *store = [WGGGroupStore shared];
-        [panel setBadgeCounts:[store unreadCountsForConversations:conversations]];
-    }
-}
-
 // ===========================================================================
-// MARK: - 阶段二的会话数组来源（阶段一返回 nil）
+// MARK: - 阶段二的会话数组来源
 // ===========================================================================
-#if WGG_STAGE2
-// 缓存最近一次读到的"原始"会话数组，供过滤和角标计数用。
-// 注意这是只读快照：我们永远不修改它。
-static NSArray *gWGGRememberedConversations = nil;
-#endif
-
-static NSArray *WGGCurrentConversations(void) {
-#if WGG_STAGE2
-    return gWGGRememberedConversations;
-#else
-    return nil;
-#endif
-}
+// 阶段一拿不到微信的私有会话数组，所以这里没有缓存。
+// 启用阶段二时：在这里加一个 static NSArray *gWGGRememberedConversations，
+// 在 %hook 里写入它，并把它喂给 WGGGroupStore 做角标计数。
+//
+// 注意：这里刻意不用 #if 守卫。原因见文件末尾"阶段二"一节的说明 ——
+// Logos 不认 #if，用 #if 会造成"引用了但没定义"的链接错误。
 
 // ===========================================================================
 // MARK: - 面板 delegate（挂在 UIViewController 上的分类）
@@ -275,7 +257,9 @@ static NSArray *WGGCurrentConversations(void) {
     UITableView *table = WGGFindMainTableView(self.view);
     [table reloadData];
 
-    WGGRefreshPanelCountsIfPossible(self);
+    // 阶段二接上数据源后，在这里刷新分组角标：
+    //   GlassGroupPanel *p = objc_getAssociatedObject(self, kWGGPanelKey);
+    //   [p setBadgeCounts:[[WGGGroupStore shared] unreadCountsForConversations:gWGGRememberedConversations]];
 }
 
 - (void)glassGroupPanelDidChangeHeight:(GlassGroupPanel *)panel {
@@ -323,50 +307,61 @@ static NSArray *WGGCurrentConversations(void) {
 %end
 
 // ===========================================================================
-// MARK: - (B) 阶段二：数据源过滤 —— 需要真机确认类名后启用
+// MARK: - (B) 阶段二：数据源过滤 —— 确认类名后再启用
 // ===========================================================================
-#if WGG_STAGE2
-
-// ⚠️ 下面这个名字是设计稿的假设值，真机探测后大概率要改。
-static NSString * const kWGGConversationClass = @"MMConversationListViewController";
-
-%hook MMConversationListViewController
-
-// 1) 记录原始数组。永远返回 %orig 的原数组，绝不原地修改。
-- (NSArray *)conversationArray {
-    NSArray *raw = %orig;
-    // copy 一份再存：微信可能随后就地改动这个数组，
-    // 我们持有它的同时它被改动 → 遍历时崩溃。
-    gWGGRememberedConversations = [raw copy];
-    return raw;
-}
-
-// 2) 行数：必须与 cellForRow 使用同一份映射，否则越界崩溃。
-- (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
-    NSInteger n = %orig;
-#if WGG_STAGE2_FILTER
-    WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
-    if (r.active) return (NSInteger)r.filtered.count;
-#endif
-    return n;
-}
-
-// 3) cell：把"过滤后的行号"翻译回"原始行号"，再调用微信原生实现。
-- (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-#if WGG_STAGE2_FILTER
-    WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
-    if (r.active && indexPath.row < (NSInteger)r.indices.count) {
-        NSInteger original = r.indices[(NSUInteger)indexPath.row].integerValue;
-        NSIndexPath *mapped = [NSIndexPath indexPathForRow:original inSection:indexPath.section];
-        return %orig(tv, mapped);
-    }
-#endif
-    return %orig;
-}
-
-%end
-
-#endif  // WGG_STAGE2
+//
+// ⚠️⚠️ 这一段必须用 // 注释掉，不能用 #if 包起来！⚠️⚠️
+//
+// 原因（第一次编译的真实报错）：
+//   Theos 的 Logos 预处理器在 C 预处理器之前工作，它不认 #if。
+//   所以即使 #if WGG_STAGE2 是 0，Logos 照样会为 %hook 里的每个方法
+//   生成 MSHookMessageEx 调用；而方法体的定义被 #if 剔除了，
+//   于是编译报：
+//     error: function '_logos_method$...$cellForRowAtIndexPath$'
+//            has internal linkage but is not defined [-Werror,-Wundefined-internal]
+//
+// 启用步骤：
+//   1. 先用阶段一拿到 Dispatch 日志，确认真实的类名和属性名
+//   2. 把下面整段的 // 删掉
+//   3. 把类名换成日志里确认出来的真名
+//   4. 想让过滤真正生效，再把下面两处 "return n;" / "return %orig;"
+//      按注释里的说明替换成过滤版本
+//
+// // ⚠️ 下面这个名字是设计稿的假设值，真机探测后大概率要改。
+// static NSString * const kWGGConversationClass = @"MMConversationListViewController";
+//
+// %hook MMConversationListViewController
+//
+// // 1) 记录原始数组。永远返回 %orig 的原数组，绝不原地修改。
+// - (NSArray *)conversationArray {
+//     NSArray *raw = %orig;
+//     // copy 一份再存：微信可能随后就地改动这个数组，
+//     // 我们持有它的同时它被改动 → 遍历时崩溃。
+//     gWGGRememberedConversations = [raw copy];
+//     return raw;
+// }
+//
+// // 2) 行数：必须与 cellForRow 使用同一份映射，否则越界崩溃。
+// - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
+//     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
+//     if (r.active) return (NSInteger)r.filtered.count;   // ← 过滤版
+//     return %orig;                                       // ← 不过滤，交给微信
+// }
+//
+// // 3) cell：把"过滤后的行号"翻译回"原始行号"，再调用微信原生实现。
+// - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+//     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
+//     if (r.active && indexPath.row < (NSInteger)r.indices.count) {
+//         NSInteger original = r.indices[(NSUInteger)indexPath.row].integerValue;
+//         NSIndexPath *mapped = [NSIndexPath indexPathForRow:original inSection:indexPath.section];
+//         return %orig(tv, mapped);                       // ← 翻译后交给微信
+//     }
+//     return %orig;                                       // ← 不过滤，交给微信
+// }
+//
+// %end
+//
+// 注意：缓存用的 gWGGRememberedConversations 启用时需要在上面单独声明。
 
 // ===========================================================================
 // MARK: - 入口

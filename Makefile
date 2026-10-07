@@ -48,9 +48,10 @@ WeChatGlassGroups_FRAMEWORKS = UIKit Foundation QuartzCore
 # 阶段一：打开运行时探测（真机上把类名日志打出来）
 WeChatGlassGroups_CFLAGS += -DWGG_DISCOVERY=1
 
-# 阶段二：确认真实类名后再打开下面两行
+# 阶段二：数据源过滤在 Tweak.x 里用 // 注释开关，不要用 -D 宏！
+# 原因：Theos 的 Logos 预处理器不认 #if，用宏开关 %hook 会导致链接错误
+#       "function ... has internal linkage but is not defined"。
 # WeChatGlassGroups_CFLAGS += -DWGG_STAGE2=1
-# WeChatGlassGroups_CFLAGS += -DWGG_STAGE2_FILTER=1
 
 # 可选：给微信原生搜索框加玻璃圆角（阶段一确认 view 层级后再开）
 # WeChatGlassGroups_CFLAGS += -DWGG_RESTYLE_SEARCHBAR=1
