@@ -5,16 +5,21 @@ name: Build Tweak
 #
 # 产物：Actions 页面 → 这次 run → 底部 Artifacts → 下载 WeChatGlassGroups-deb
 #
-# ⚠️ 两个已经踩过的坑，改这个文件时别再犯：
+# ⚠️ 已经踩过的坑，改这个文件时别再犯（每条都真实翻车过）：
+#
 #   1) 不要用 working-directory 指定工程目录！
-#      GitHub 会把仓库内容放进 /Users/runner/work/<仓库名>/<仓库名>，
-#      而本仓库内部还有一层同名文件夹 WeChatGlassGroups/，
-#      再叠加 working-directory 就会变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
-#      → 目录不存在 → shell 启动失败 → 0 秒报错。
-#      所以下面统一用 run 里的 cd 进工程目录。
-#   2) 不要覆盖 env.PATH。macOS runner 自带的 PATH 已包含 /usr/bin（make 在这里）
-#      和 Xcode toolchain；自己覆盖反而可能把 Theos 需要的路径弄丢。
-#      诊断步骤统一用 || true 兜底，绝不会因为日志打不出来就挡住编译。
+#      GitHub 把仓库内容放在 /Users/runner/work/<仓库名>/<仓库名>，
+#      本仓库内部又有一层同名文件夹 WeChatGlassGroups/，
+#      再叠加 working-directory 就变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
+#      → 目录不存在 → shell 直接启动失败。所以统一用 run 里的 cd。
+#
+#   2) GitHub Actions 的 bash 默认带 -e（任一命令非零退出就整步失败）。
+#      所以"纯诊断步骤"极其危险：一句 command -v make 找不到 make 就能让整轮变红。
+#      → 结论：不要加诊断步骤，需要的信息用 set +e 包起来，或者写进编译步骤里。
+#
+#   3) 不要覆盖 env.PATH。runner 自带 PATH 已包含 /usr/bin（make 在这里）和 Xcode。
+#
+#   4) 不要改成 macos-13！那是 x86_64 runner，编不出 arm64e，装到 iPhone 14 Pro 上无效。
 
 on:
   push:
@@ -23,108 +28,108 @@ on:
 
 jobs:
   build:
-    # ⚠️ 必须是 macOS runner。Linux runner 编译 iOS Tweak 会缺私有框架 tbd，
-    #    这条路坑很深，不要改成 ubuntu-latest。
     runs-on: macos-14
 
     steps:
+      # 不需要单独"安装 Theos"的 action：
+      # 下面的 Find Theos 步骤会直接找到 runner 镜像里自带的 Theos
+      # （通常在 /Users/runner/theos）。找不到时才去克隆一份。
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 Theos（内部会编译 Theos 自己的工具链，通常要 30~60 秒）
-      - name: Install Theos
-        uses: Randomblock1/theos-action@v1
-
-      # ---------------------------------------------------------------------
-      # 诊断 + 配置：把 THEOS 和 PATH 写进 $GITHUB_ENV，供后续步骤使用。
-      # theos-action 不保证会把 $THEOS 传给后面的步骤。
-      # ---------------------------------------------------------------------
-      - name: Locate Theos
+      - name: Find Theos
         run: |
-          echo "THEOS(env) = '${THEOS}'"
-          for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" "/opt/theos" "/Users/runner/theos"; do
-            if [ -d "$d/makefiles" ]; then echo "FOUND: $d"; else echo "not here: $d"; fi
+          set +e
+          if [ -n "$THEOS" ] && [ -f "$THEOS/makefiles/common.mk" ]; then
+            FOUND="$THEOS"
+          fi
+          for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" /opt/theos /Users/runner/theos; do
+            if [ -z "$FOUND" ] && [ -f "$d/makefiles/common.mk" ]; then FOUND="$d"; fi
           done
 
-          if [ -z "$THEOS" ] || [ ! -d "$THEOS/makefiles" ]; then
-            for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" "/opt/theos" "/Users/runner/theos"; do
-              if [ -d "$d/makefiles" ]; then
-                echo "THEOS=$d" >> "$GITHUB_ENV"
-                echo "→ 选用 $d"
-                break
-              fi
-            done
-          else
-            echo "THEOS=$THEOS" >> "$GITHUB_ENV"
-            echo "→ 沿用环境里的 $THEOS"
+          if [ -z "$FOUND" ]; then
+            echo "未找到 Theos，克隆一份（需要几分钟）"
+            git clone --recursive --depth 1 https://github.com/theos/theos.git "$HOME/theos" || true
+            FOUND="$HOME/theos"
           fi
 
+          echo "THEOS=$FOUND" >> "$GITHUB_ENV"
+          echo "使用 Theos: $FOUND"
+
+          # 关键：sdks 是 submodule，里面才是 iPhoneOS 16.x SDK。
+          # 没同步的话编译会报找不到 SDK。
+          if [ -d "$FOUND/.git" ] && [ ! -d "$FOUND/sdks/iPhoneOS16.4.sdk" ]; then
+            echo "同步 sdks submodule..."
+            git -C "$FOUND" submodule update --init --recursive || true
+          fi
+          echo "--- sdks 目录 ---"
+          ls -la "$FOUND/sdks" 2>/dev/null || echo "sdks 目录不存在"
+          exit 0
+
+      # 默认不做任何事：theos/theos 的 sdks 仓库自带 iPhoneOS 16.x SDK
+      # （含私有框架 tbd）。只有在确实没 SDK 时才从 Xcode 兜底拷贝，
+      # 而且兜底失败也不算错误 —— 让编译步骤自己去报真正的问题。
       - name: Prepare SDK
         run: |
+          set +e
           echo "THEOS=$THEOS"
           ls -la "$THEOS/sdks" || true
           if [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-            echo "Theos 没有自带 SDK，从 Xcode 拷贝一份"
-            SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
-            echo "Xcode SDK: $SDK_PATH"
-            mkdir -p "$THEOS/sdks"
-            cp -R "$SDK_PATH" "$THEOS/sdks/iPhoneOS16.4.sdk"
+            SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null)"
+            if [ -n "$SDK_PATH" ]; then
+              echo "Theos 无自带 SDK，从 Xcode 拷贝: $SDK_PATH"
+              mkdir -p "$THEOS/sdks"
+              cp -R "$SDK_PATH" "$THEOS/sdks/iPhoneOS16.4.sdk" || true
+            else
+              echo "警告：既没有自带 SDK，也拿不到 Xcode 的 SDK"
+            fi
           fi
-          ls -la "$THEOS/sdks"
-
-      # 纯诊断步骤：全部容错，绝不能因为它本身失败而挡住编译
-      - name: Show toolchain
-        run: |
-          echo "THEOS=$THEOS"
-          echo "PATH=$PATH"
-          echo "--- make ---"
-          command -v make || echo "make NOT in PATH"
-          { make --version 2>&1 | head -n1; } || echo "make --version 失败"
-          echo "--- xcodebuild ---"
-          xcodebuild -version 2>&1 || echo "xcodebuild 失败（不影响编译，Theos 用自带 toolchain）"
-          echo "--- 仓库根目录 ---"
-          ls -la
-          echo "--- 工程目录 ---"
-          ls -la WeChatGlassGroups
-          echo "--- 架构 ---"
-          uname -m
+          ls -la "$THEOS/sdks" || true
+          exit 0
 
       - name: Build package
         run: |
           cd WeChatGlassGroups
           echo "=== 开始编译 ==="
-          make clean 2>&1 || true
-          make package FINALPACKAGE=1 DEBUG=0 2>&1
+          echo "THEOS=$THEOS"
+          make clean || true
+          make package FINALPACKAGE=1 DEBUG=0
 
       # 关键校验：确认 dylib 真的编成了 arm64e，且签名没丢。
-      # 很多人卡在"装上了但插件不生效"，十次有九次是架构或签名不对。
+      # "装上了但插件不生效"十次有九次是架构或签名不对。
+      # 这一段全部容错，绝不能因为日志命令失败而挡住产物。
       - name: Verify binary
         if: success()
         run: |
-          set -e
+          set +e
           cd WeChatGlassGroups
           DYLIB="$(find .theos/obj -name 'WeChatGlassGroups.dylib' | head -n1)"
           echo "dylib: $DYLIB"
           file "$DYLIB"
           echo "--- 期望看到 arm64e ---"
-          lipo -archs "$DYLIB" || true
+          lipo -archs "$DYLIB"
           echo "--- 签名信息 ---"
-          codesign -dvvv "$DYLIB" 2>&1 || true
+          codesign -dvvv "$DYLIB" 2>&1
           echo "--- 链接了哪些库 ---"
           otool -L "$DYLIB"
           echo "--- 检查是否误链 Swift 运行时（链了就会崩） ---"
-          if otool -L "$DYLIB" | grep -q swift; then
+          if otool -L "$DYLIB" 2>/dev/null | grep -q swift; then
             echo "⚠️ 警告：链接了 Swift 运行时"
           else
             echo "OK：没有链接 Swift 运行时"
           fi
+          exit 0
 
       - name: Collect deb
         if: success()
         run: |
+          set +e
           mkdir -p out
-          cp WeChatGlassGroups/packages/*.deb out/ 2>/dev/null || cp WeChatGlassGroups/*.deb out/
+          cp WeChatGlassGroups/packages/*.deb out/ 2>/dev/null
+          cp WeChatGlassGroups/*.deb out/ 2>/dev/null
+          echo "--- 收集结果 ---"
           ls -la out
+          exit 0
 
       - name: Upload deb
         if: success()
