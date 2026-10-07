@@ -19,7 +19,6 @@ static const CGFloat kSidePadding   = 20.0;  // 左右留白：60px
 static const CGFloat kHeroWidth     = 178.0; // 左侧大图宽：535px
 static const CGFloat kHeroGap       = 12.0;  // 大图与右侧卡片间距：35px
 static const CGFloat kHeroRadius    = 20.0;  // 大图圆角
-static const CGFloat kCardPadding   = 12.0;  // 右侧卡片内边距
 static const CGFloat kAvatarSize    = 52.0;  // 卡片内圆形头像：150px
 static const CGFloat kPillHeight    = 72.0;  // 分组按钮高：215px
 static const CGFloat kPillSpacing   = 10.0;  // 按钮间距
@@ -202,8 +201,8 @@ static void WGGApplyGlassChrome(UIView *v, CGFloat radius) {
 @property (nonatomic, strong) NSMutableArray<WGGPillButton *> *pills;
 @property (nonatomic, copy) NSArray<NSString *> *groupTitles;
 @property (nonatomic, assign) WGGGroup selectedGroup;
-@property (nonatomic, assign) CGFloat glassAlpha;
-@property (nonatomic, assign) CGFloat cornerRadius;
+// 注意：glassAlpha / cornerRadius 在头文件里已经是 readwrite，
+//       不能再在 class extension 里重复声明（会报 illegal redeclaration）。
 @end
 
 @implementation GlassGroupPanel
