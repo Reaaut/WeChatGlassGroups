@@ -184,25 +184,35 @@ jobs:
           exit 0
 
       # 把 deb 提交回仓库 dist/ 目录 —— 用户直接从 GitHub 网页下载，
-      # 不依赖 Artifacts（这个账号的 Artifacts 一直有问题）。
+      # 不依赖 Artifacts（Artifacts 必须登录 GitHub 才能下载）。
       # 提交信息带 [skip ci]，不会触发下一轮编译。
+      #
+      # ⚠️ 两个必须注意的点（都真实踩过）：
+      #   1) git add -f：.gitignore 里有 *.deb，不加 -f 会静默跳过，
+      #      结果"提交成功"但 dist 里什么都没有。
+      #   2) git push origin HEAD:main：actions/checkout 检出的是
+      #      detached HEAD，直接 git push 会报 "not currently on a branch"。
       - name: Commit deb to repo
         if: success()
         run: |
           set +e
           mkdir -p dist
           cp out/*.deb dist/ 2>/dev/null
+          echo "--- 待提交的 dist ---"
+          ls -la dist
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add dist
+          git add -f dist
           if git diff --cached --quiet; then
             echo "dist 没有变化，跳过提交"
-          else
-            git commit -m "build: 更新 deb [skip ci]"
-            git push 2>&1 || echo "⚠️ 推送失败：去仓库 Settings → Actions → General → Workflow permissions 选 Read and write，然后重新跑一次"
+            exit 0
           fi
-          echo "--- dist 目录 ---"
-          ls -la dist
+          git commit -m "build: 更新 deb [skip ci]"
+          if git push origin HEAD:main 2>&1; then
+            echo "✅ deb 已提交到 dist/，可从仓库网页直接下载（无需登录）"
+          else
+            echo "::error::推送 dist 失败。请去仓库 Settings → Actions → General → Workflow permissions 选 Read and write permissions，然后重新跑一次"
+          fi
           exit 0
 
       - name: Upload deb

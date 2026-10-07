@@ -4,6 +4,12 @@ packages/
 out/
 *.deb
 
+# ⚠️ 但 dist/ 里放的是"要给用户下载的成品 deb"，必须提交进仓库！
+# 上面那条 *.deb 会把 dist 里的 deb 也忽略掉，导致 CI 提交 dist 时
+# 静默跳过（第一次就踩了这个坑），所以下面要开例外。
+!dist/
+!dist/*.deb
+
 # macOS
 .DS_Store
 
