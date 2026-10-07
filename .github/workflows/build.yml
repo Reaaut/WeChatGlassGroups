@@ -5,12 +5,16 @@ name: Build Tweak
 #
 # 产物：Actions 页面 → 这次 run → 底部 Artifacts → 下载 WeChatGlassGroups-deb
 #
-# ⚠️ 不要用 working-directory 指定工程目录！
-#    GitHub 会把仓库内容放进 /Users/runner/work/<仓库名>/<仓库名>，
-#    而本仓库内部还有一层同名文件夹 WeChatGlassGroups/，
-#    再叠加 working-directory 就会变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
-#    → 目录不存在 → shell 启动失败 → 0 秒报错。
-#    所以下面统一用 run 里的 cd 进工程目录。
+# ⚠️ 两个已经踩过的坑，改这个文件时别再犯：
+#   1) 不要用 working-directory 指定工程目录！
+#      GitHub 会把仓库内容放进 /Users/runner/work/<仓库名>/<仓库名>，
+#      而本仓库内部还有一层同名文件夹 WeChatGlassGroups/，
+#      再叠加 working-directory 就会变成 .../WeChatGlassGroups/WeChatGlassGroups/WeChatGlassGroups
+#      → 目录不存在 → shell 启动失败 → 0 秒报错。
+#      所以下面统一用 run 里的 cd 进工程目录。
+#   2) 不要覆盖 env.PATH。macOS runner 自带的 PATH 已包含 /usr/bin（make 在这里）
+#      和 Xcode toolchain；自己覆盖反而可能把 Theos 需要的路径弄丢。
+#      诊断步骤统一用 || true 兜底，绝不会因为日志打不出来就挡住编译。
 
 on:
   push:
@@ -27,14 +31,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 Theos
+      # 安装 Theos（内部会编译 Theos 自己的工具链，通常要 30~60 秒）
       - name: Install Theos
         uses: Randomblock1/theos-action@v1
 
       # ---------------------------------------------------------------------
-      # 诊断：theos-action 有时不会把 $THEOS 传给后面的步骤，
-      # 那样 make 会连 Theos 的 common.mk 都找不到。这里把真实路径找出来，
-      # 写进 $GITHUB_ENV 给后续步骤用。
+      # 诊断 + 配置：把 THEOS 和 PATH 写进 $GITHUB_ENV，供后续步骤使用。
+      # theos-action 不保证会把 $THEOS 传给后面的步骤。
       # ---------------------------------------------------------------------
       - name: Locate Theos
         run: |
@@ -69,16 +72,21 @@ jobs:
           fi
           ls -la "$THEOS/sdks"
 
+      # 纯诊断步骤：全部容错，绝不能因为它本身失败而挡住编译
       - name: Show toolchain
         run: |
           echo "THEOS=$THEOS"
+          echo "PATH=$PATH"
+          echo "--- make ---"
+          command -v make || echo "make NOT in PATH"
+          { make --version 2>&1 | head -n1; } || echo "make --version 失败"
+          echo "--- xcodebuild ---"
+          xcodebuild -version 2>&1 || echo "xcodebuild 失败（不影响编译，Theos 用自带 toolchain）"
           echo "--- 仓库根目录 ---"
           ls -la
           echo "--- 工程目录 ---"
           ls -la WeChatGlassGroups
-          which make
-          make --version | head -n1
-          xcodebuild -version
+          echo "--- 架构 ---"
           uname -m
 
       - name: Build package
