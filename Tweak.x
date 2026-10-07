@@ -2,29 +2,28 @@
 //  Tweak.x
 //  WeChatGlassGroups
 //
-//  ⚠️ 先读这段再改代码
-//  ---------------------------------------------------------------------------
-//  本文件的 %hook 分两类：
+//  【Hook 层】只做三件事：找到首页 → 挂抽屉 → 把事件转发给数据层。
+//  不写任何 UI 渲染代码，也不直接读写 plist。
 //
-//  (A)【通用钩子】不依赖任何微信私有类名，一定安全：
-//      UIViewController 的 viewDidAppear / viewDidLayoutSubviews、
-//      UITableView 的 reloadData。作用是"找到首页 → 挂上面板 → 撑开 contentInset"。
-//      即使类名猜错，这部分也只是不生效，不会崩微信。
+//  ── 当前阶段：阶段一（注入 + UI 验证）────────────────────────────────
+//  已经实现的钩子（只有一个，刻意保持最小）：
+//      UIViewController -viewDidAppear:
+//        识别首页 → 挂 WGGDrawerHost（带防重复叠加）
 //
-//  (B)【数据源钩子】依赖真实类名/属性名，必须先用 Discovery 模块在真机上确认。
-//      见文件末尾 "阶段二" 区域，**目前整段用 // 注释掉**。
-//      原因：微信刷新会话列表时，很可能"取数组"和"算行数"是两条独立路径。
-//      只拦其中一个会造成 filtered.count != rows 的不一致 → index 越界崩溃。
-//      所以必须先在真机上确认「谁的 -numberOfRowsInSection: 和 -cellForRowAtIndexPath:
-//      在给首页 table 供数」，然后成对地拦这三个方法。
+//  ⚠️ 为什么只钩这一个？
+//     Tweak 里"钩得越少越不容易崩"。之前的版本还钩了
+//     viewDidLayoutSubviews 和 UITableView -reloadData 来调 contentInset ——
+//     改成侧边抽屉后列表不再需要下移，那两处就全删了。
+//     少两个钩子 = 少两处可能和微信打架的地方。
 //
-//  ⚠️ 不要用 #if 去开关 %hook！Theos 的 Logos 预处理器不认 #if，
-//     它照样会生成 hook 代码，但方法体被剔除了，结果是链接错误：
-//     "function ... has internal linkage but is not defined"。
-//     第一次编译就是死在这个坑上。开关 %hook 只能用 // 注释。
+//  ── 还没做（都依赖阶段一拿到真实类名）──────────────────────────────
+//   1. 会话数据源过滤：要成对拦截 numberOfRows / cellForRow，
+//      只拦 getter 会 index 越界。见文件末尾注释掉的骨架。
+//   2. 长按会话 cell 的分组菜单：需要微信 cell 的真实类名。
+//   3. 微信「我 → 设置」里的插件入口：需要 MMSettingViewController 真名。
 //
-//  编译开关（Makefile 里加）：
-//      -DWGG_DISCOVERY=1   打开运行时探测（阶段一必开）
+//  ── 版本门禁 ────────────────────────────────────────────────────────
+//    非 8.0.78 直接不介入（用 Info.plist 版本号判断，比 hook 类名可靠）。
 //
 
 #import <UIKit/UIKit.h>
@@ -41,19 +40,18 @@ static BOOL WGGVersionSupported(void);
 static UITableView *WGGFindMainTableView(UIView *root);
 static BOOL WGGLooksLikeConversationController(UIViewController *vc);
 static BOOL WGGIsExcludedController(UIViewController *vc);
-static void WGGInstallPanelIfNeeded(UIViewController *vc);
-static void WGGApplyTableInset(UIViewController *vc);
-#if WGG_RESTYLE_SEARCHBAR
-static void WGGRestyleSearchBarIfFound(UIView *root);
-#endif
+static void WGGInstallDrawerIfNeeded(UIViewController *vc);
+static void WGGApplyStoreConfigToPanel(GlassGroupPanel *panel);
+
+/// 关联对象键：挂在首页控制器上，用来判断"抽屉是否已经装过"。
+static const void *kWGGDrawerKey = &kWGGDrawerKey;
+
+/// 目标微信版本白名单。
+static NSString * const kWGGSupportedWeChatVersion = @"8.0.78";
 
 // ===========================================================================
 // MARK: - 版本门禁
 // ===========================================================================
-// 设计稿提到"非 8.0.78 不加载"。这里用真实的 Info.plist 版本号判断，
-// 比 hook 类名更可靠：类名会变，但版本号是我们自己维护的白名单。
-static NSString * const kWGGSupportedWeChatVersion = @"8.0.78";
-
 static BOOL WGGVersionSupported(void) {
     static BOOL ok = NO;
     static dispatch_once_t once;
@@ -71,11 +69,7 @@ static BOOL WGGVersionSupported(void) {
 // ===========================================================================
 // MARK: - 首页识别
 // ===========================================================================
-static const void *kWGGPanelKey = &kWGGPanelKey;
-static const void *kWGGTableKey = &kWGGTableKey;
-static const void *kWGGInsetKey = &kWGGInsetKey;   // 我们额外加的 top inset，卸载时要还回去
-
-/// 找出这个控制器里"最像会话列表"的那个 table view：面积最大的 UITableView。
+/// 控制器里面积最大的那个 UITableView（不依赖任何微信私有类名）。
 static UITableView *WGGFindMainTableView(UIView *root) {
     if (!root) return nil;
     __block UITableView *best = nil;
@@ -94,7 +88,6 @@ static UITableView *WGGFindMainTableView(UIView *root) {
     return best;
 }
 
-/// 是不是"首页会话列表"控制器：类名命中关键字即可（真名确认后可换成精确判断）。
 static BOOL WGGLooksLikeConversationController(UIViewController *vc) {
     NSString *cls = NSStringFromClass([vc class]);
     if ([cls rangeOfString:@"Conversation" options:NSCaseInsensitiveSearch].location != NSNotFound) return YES;
@@ -103,7 +96,6 @@ static BOOL WGGLooksLikeConversationController(UIViewController *vc) {
     return NO;
 }
 
-/// 排除"聊天详情 / 设置 / 搜索"这类里面也有大 table 的控制器。
 static BOOL WGGIsExcludedController(UIViewController *vc) {
     NSString *cls = NSStringFromClass([vc class]);
     NSArray *bad = @[ @"Chat", @"Message", @"Detail", @"Setting", @"Picker", @"Search" ];
@@ -114,266 +106,175 @@ static BOOL WGGIsExcludedController(UIViewController *vc) {
 }
 
 // ===========================================================================
-// MARK: - 面板装配
+// MARK: - 把数据层的配置灌进 UI 层
 // ===========================================================================
-static void WGGInstallPanelIfNeeded(UIViewController *vc) {
+// UI 层不碰 GroupStore，由这里（Hook/编排层）负责两边对接。
+static void WGGApplyStoreConfigToPanel(GlassGroupPanel *panel) {
+    if (!panel) return;
+    WGGGroupStore *store = [WGGGroupStore shared];
+    panel.groupNames        = [store panelGroupNames];
+    panel.selectedGroupName = [store selectedGroupName];
+    panel.glassAlpha        = store.glassAlpha;
+    panel.drawerWidth       = store.drawerWidth;
+    panel.searchEnabled     = store.searchEnabled;
+}
+
+// ===========================================================================
+// MARK: - 挂抽屉
+// ===========================================================================
+static void WGGInstallDrawerIfNeeded(UIViewController *vc) {
     if (!WGGVersionSupported()) return;
 
     WGGGroupStore *store = [WGGGroupStore shared];
     if (!store.isEnabled) return;
     if (!WGGLooksLikeConversationController(vc) || WGGIsExcludedController(vc)) return;
 
+    WGGDrawerHost *host = objc_getAssociatedObject(vc, kWGGDrawerKey);
+
+    if (host) {
+        // 已经装过：只把最新配置刷一遍（设置改过之后回到首页就生效），
+        // 绝不再 addSubview —— 这就是"防止重复叠加"的关键。
+        WGGApplyStoreConfigToPanel(host.panel);
+        host.triggerButtonHidden = store.triggerButtonHidden;
+        host.animatedPresentation = store.animatedPresentation;
+        return;
+    }
+
+    // 认一下是不是真有会话列表，没有就别插手（比如微信内嵌的临时页面）
     UITableView *table = WGGFindMainTableView(vc.view);
     if (!table) return;
 
-    if (objc_getAssociatedObject(vc, kWGGPanelKey)) return;   // 已装过
+    host = [[[WGGDrawerHost alloc] initWithFrame:CGRectZero] autorelease];
+    host.delegate = (id<GlassGroupPanelDelegate>)vc;   // 分类实现见下
+    host.triggerButtonHidden = store.triggerButtonHidden;
+    host.animatedPresentation = store.animatedPresentation;
+    WGGApplyStoreConfigToPanel(host.panel);
 
-    GlassGroupPanel *panel = [[GlassGroupPanel alloc] initWithFrame:CGRectZero];
-    panel.delegate = (id<GlassGroupPanelDelegate>)vc;
-
-    // 效果图里的两张图：右上角是圆形人像，左侧是黑白大图。
-    // 素材还没提供，先留空（面板会显示灰阶占位）。
-    // 想换成真图，取消下面两行注释并把图片放进 Resources/ 后一起打包：
-    //   [panel setAvatarImage:[UIImage imageNamed:@"avatar"]];
-    //   [panel setHeroImage:[UIImage imageNamed:@"hero"]];
-
-    [panel restoreFromDefaults];
-    [vc.view addSubview:panel];
-
-    UILayoutGuide *safe = vc.view.safeAreaLayoutGuide;
-    // 效果图左右留白是 60px(@3x) = 20pt，这里由 panel 内部自己管，
-    // 所以 pin 到 view 边缘，不要再加 12pt 的外边距。
+    [vc.view addSubview:host];
     [NSLayoutConstraint activateConstraints:@[
-        [panel.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor],
-        [panel.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
-        [panel.topAnchor constraintEqualToAnchor:safe.topAnchor constant:6],
+        [host.topAnchor constraintEqualToAnchor:vc.view.topAnchor],
+        [host.bottomAnchor constraintEqualToAnchor:vc.view.bottomAnchor],
+        [host.leadingAnchor constraintEqualToAnchor:vc.view.leadingAnchor],
+        [host.trailingAnchor constraintEqualToAnchor:vc.view.trailingAnchor],
     ]];
 
-    objc_setAssociatedObject(vc, kWGGPanelKey, panel, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(vc, kWGGTableKey, table, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(vc, kWGGDrawerKey, host, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    WGGLogMessage([NSString stringWithFormat:@"面板已挂载到 %@，table=%@",
-                   NSStringFromClass([vc class]), NSStringFromClass([table class])]);
-
-    [vc.view layoutIfNeeded];
-    WGGApplyTableInset(vc);
-
-#if WGG_RESTYLE_SEARCHBAR
-    WGGRestyleSearchBarIfFound(vc.view);
-#endif
-}
-
-#if WGG_RESTYLE_SEARCHBAR
-/// 【可选，默认关闭】效果图底部的搜索框是"圆角玻璃胶囊 + 左侧放大镜"。
-/// 与其去 hook 微信的搜索框布局（风险高、版本一变就废），
-/// 不如直接给它加圆角 + 毛玻璃背景 —— 视觉上就到位了，而且几乎不可能崩。
-///
-/// 为什么默认关闭：不同微信版本的搜索框实现差别很大
-/// （UISearchBar / 自定义 UIView + UITextField 都有），
-/// 强行改圆角和 masksToBounds 有可能让它的内容显示错位。
-/// 建议阶段一确认了 view 层级之后再打开。
-static void WGGRestyleSearchBarIfFound(UIView *root) {
-    if (!root) return;
-    for (UIView *v in root.subviews) {
-        if ([v isKindOfClass:NSClassFromString(@"UISearchBar")]) {
-            v.layer.cornerRadius = 24.0;
-            v.layer.cornerCurve = kCACornerCurveContinuous;
-            v.clipsToBounds = YES;
-            v.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
-            WGGLogMessage(@"已给搜索框加玻璃圆角");
-        }
-        WGGRestyleSearchBarIfFound(v);
-    }
-}
-#endif
-
-/// 把会话列表往下压，避免被悬浮面板遮挡。
-/// 关键：不要硬编码数字。每次先减掉"上一次我们加的量"再加新的，
-/// 否则下拉刷新 / 旋转 / 字号变化时会反复叠加，列表越推越低。
-static void WGGApplyTableInset(UIViewController *vc) {
-    GlassGroupPanel *panel = objc_getAssociatedObject(vc, kWGGPanelKey);
-    UITableView *table = objc_getAssociatedObject(vc, kWGGTableKey);
-    if (!panel || !table) return;
-
-    CGFloat panelHeight = panel.bounds.size.height;
-    if (panelHeight <= 1.0) {
-        [panel layoutIfNeeded];
-        panelHeight = panel.bounds.size.height;
-    }
-    if (panelHeight <= 1.0) return;   // 还没布局完，等下一次 layout 回调
-
-    CGFloat desired = panel.frame.origin.y + panelHeight + 8.0;
-
-    UIEdgeInsets inset = table.contentInset;
-    NSValue *previous = objc_getAssociatedObject(vc, kWGGInsetKey);
-    CGFloat previousExtra = previous ? previous.CGPointValue.y : 0.0;
-
-    CGFloat newInsetTop = inset.top - previousExtra + desired;
-    if (fabs(newInsetTop - inset.top) < 0.5) {
-        // 没有变化就别动，避免打断微信正在进行的滚动 / 动画
-        objc_setAssociatedObject(vc, kWGGInsetKey,
-                                 [NSValue valueWithCGPoint:CGPointMake(0, desired)],
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        return;
-    }
-    inset.top = newInsetTop;
-    table.contentInset = inset;
-
-    // 初始状态（还没滚动过）时，让内容从面板下方开始
-    if (table.contentOffset.y < -inset.top + 0.5) {
-        table.contentOffset = CGPointMake(table.contentOffset.x, -inset.top);
-    }
-
-    objc_setAssociatedObject(vc, kWGGInsetKey,
-                             [NSValue valueWithCGPoint:CGPointMake(0, desired)],
-                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WGGLogMessage([NSString stringWithFormat:@"抽屉已挂载：vc=%@ table=%@ 分组=%@",
+                   NSStringFromClass([vc class]),
+                   NSStringFromClass([table class]),
+                   [store allGroupNames]]);
 }
 
 // ===========================================================================
-// MARK: - 阶段二的会话数组来源
+// MARK: - 面板事件回调（用分类挂在 UIViewController 上，免去运行时补协议）
 // ===========================================================================
-// 阶段一拿不到微信的私有会话数组，所以这里没有缓存。
-// 启用阶段二时：在这里加一个 static NSArray *gWGGRememberedConversations，
-// 在 %hook 里写入它，并把它喂给 WGGGroupStore 做角标计数。
-//
-// 注意：这里刻意不用 #if 守卫。原因见文件末尾"阶段二"一节的说明 ——
-// Logos 不认 #if，用 #if 会造成"引用了但没定义"的链接错误。
-
-// ===========================================================================
-// MARK: - 面板 delegate（挂在 UIViewController 上的分类）
-// ===========================================================================
-@interface UIViewController (WGGPanelDelegate) <GlassGroupPanelDelegate>
+@interface UIViewController (WGGDrawerDelegate) <GlassGroupPanelDelegate>
 @end
 
-@implementation UIViewController (WGGPanelDelegate)
+@implementation UIViewController (WGGDrawerDelegate)
 
-- (void)glassGroupPanel:(GlassGroupPanel *)panel didSelectGroup:(WGGGroup)group {
-    WGGLogMessage([NSString stringWithFormat:@"切换到分组 %@", WGGGroupName(group)]);
-    [WGGGroupStore shared].selectedGroup = group;
+- (void)glassGroupPanel:(GlassGroupPanel *)panel didSelectGroup:(NSString *)groupName {
+    WGGGroupStore *store = [WGGGroupStore shared];
+    store.selectedGroupName = groupName;
+    WGGLogMessage([NSString stringWithFormat:@"选中分组 → %@", groupName]);
 
-    // 选中分组 → 刷新列表。
-    // 阶段一：这里只是普通 reloadData，过滤还没接管，所以视觉上列表不变；
-    // 阶段二打开数据源钩子后，这里就会真的只显示该分组的会话。
+    // 让微信自己重画列表。阶段一还没接管数据源，所以这一步只是"无害地刷一下"；
+    // 阶段二接上过滤后，同一个调用就会真的把列表换成该分组的会话。
     UITableView *table = WGGFindMainTableView(self.view);
     [table reloadData];
 
-    // 阶段二接上数据源后，在这里刷新分组角标：
-    //   GlassGroupPanel *p = objc_getAssociatedObject(self, kWGGPanelKey);
-    //   [p setBadgeCounts:[[WGGGroupStore shared] unreadCountsForConversations:gWGGRememberedConversations]];
+    // 角标要等阶段二能拿到会话数组才能算（见 GroupStore 的 countsForConversations:）。
 }
 
-- (void)glassGroupPanelDidChangeHeight:(GlassGroupPanel *)panel {
-    WGGApplyTableInset(self);
+- (void)glassGroupPanel:(GlassGroupPanel *)panel didChangeSearchText:(NSString *)text {
+    // ⚠️ 搜索"看起来能加"，但它同样需要介入会话数据源才可能正确 ——
+    //    只过滤 UI 而不同步行数会直接崩溃。
+    //    所以这里先只记录，不动列表。等阶段二确认了数据源结构再接。
+    WGGLogMessage([NSString stringWithFormat:@"搜索框输入：%@（阶段三实现过滤）", text]);
 }
 
 @end
 
 // ===========================================================================
-// MARK: - (A) 通用钩子 —— 不依赖微信私有类名，安全
+// MARK: - 唯一的通用钩子
 // ===========================================================================
 %hook UIViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     @autoreleasepool {
-        WGGInstallPanelIfNeeded(self);
-    }
-}
-
-- (void)viewDidLayoutSubviews {
-    %orig;
-    @autoreleasepool {
-        // 面板高度可能因图片 / 字号变化，每次布局后校正 inset
-        if (objc_getAssociatedObject(self, kWGGPanelKey)) {
-            WGGApplyTableInset(self);
-        }
+        WGGInstallDrawerIfNeeded(self);
     }
 }
 
 %end
 
-// 微信每次 reloadData，我们都把 inset 校一遍（下拉刷新、收新消息都会走到这里）
-%hook UITableView
-- (void)reloadData {
-    %orig;
-    @autoreleasepool {
-        UIResponder *r = self;
-        while (r && ![r isKindOfClass:[UIViewController class]]) r = [r nextResponder];
-        if (r && objc_getAssociatedObject(r, kWGGPanelKey)) {
-            WGGApplyTableInset((UIViewController *)r);
-        }
-    }
-}
-%end
-
 // ===========================================================================
-// MARK: - (B) 阶段二：数据源过滤 —— 确认类名后再启用
+// MARK: - 阶段二骨架（拿到真实类名后再启用）
 // ===========================================================================
 //
-// ⚠️⚠️ 这一段必须用 // 注释掉，不能用 #if 包起来！⚠️⚠️
-//
-// 原因（第一次编译的真实报错）：
-//   Theos 的 Logos 预处理器在 C 预处理器之前工作，它不认 #if。
-//   所以即使 #if WGG_STAGE2 是 0，Logos 照样会为 %hook 里的每个方法
-//   生成 MSHookMessageEx 调用；而方法体的定义被 #if 剔除了，
-//   于是编译报：
-//     error: function '_logos_method$...$cellForRowAtIndexPath$'
-//            has internal linkage but is not defined [-Werror,-Wundefined-internal]
+// ⚠️⚠️ 这一段必须保持 // 注释状态，不能用 #if 包！⚠️⚠️
+//   Theos 的 Logos 预处理器不认 #if，它会照样生成 hook 代码，
+//   但方法体被剔除了 → 链接报 "function ... has internal linkage but is not defined"。
+//   这个坑已经踩过一次了。
 //
 // 启用步骤：
-//   1. 先用阶段一拿到 Dispatch 日志，确认真实的类名和属性名
-//   2. 把下面整段的 // 删掉
-//   3. 把类名换成日志里确认出来的真名
-//   4. 想让过滤真正生效，再把下面两处 "return n;" / "return %orig;"
-//      按注释里的说明替换成过滤版本
+//   1. 阶段一跑起来，从 syslog 里拿到真实的类名和属性名
+//   2. 把下面整段的 // 去掉，并换成真名
+//   3. 先只开 getter 观察日志（确认拿得到数组），再开过滤
 //
-// // ⚠️ 下面这个名字是设计稿的假设值，真机探测后大概率要改。
-// static NSString * const kWGGConversationClass = @"MMConversationListViewController";
+// // 需要真机确认的两个名字：
+// static NSString * const kWGGConversationClass     = @"MMConversationListViewController";
+// static NSString * const kWGGConversationArrayName = @"conversationArray";
+//
+// // 最近一次读到的原始会话数组（只读快照，绝不修改）
+// static NSArray *gWGGRememberedConversations = nil;
 //
 // %hook MMConversationListViewController
 //
-// // 1) 记录原始数组。永远返回 %orig 的原数组，绝不原地修改。
+// // 1) 记录原始数组，原样返回（绝不在 getter 里改数组）
 // - (NSArray *)conversationArray {
 //     NSArray *raw = %orig;
-//     // copy 一份再存：微信可能随后就地改动这个数组，
-//     // 我们持有它的同时它被改动 → 遍历时崩溃。
+//     [gWGGRememberedConversations release];
 //     gWGGRememberedConversations = [raw copy];
 //     return raw;
 // }
 //
-// // 2) 行数：必须与 cellForRow 使用同一份映射，否则越界崩溃。
+// // 2) 行数：必须和 cellForRow 用同一份映射，否则越界崩溃
 // - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
 //     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
-//     if (r.active) return (NSInteger)r.filtered.count;   // ← 过滤版
-//     return %orig;                                       // ← 不过滤，交给微信
+//     if (r.active) return (NSInteger)r.filtered.count;
+//     return %orig;
 // }
 //
-// // 3) cell：把"过滤后的行号"翻译回"原始行号"，再调用微信原生实现。
+// // 3) cell：把"过滤后的行号"翻译回原始行号，再交给微信原生实现
 // - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
 //     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
 //     if (r.active && indexPath.row < (NSInteger)r.indices.count) {
 //         NSInteger original = r.indices[(NSUInteger)indexPath.row].integerValue;
 //         NSIndexPath *mapped = [NSIndexPath indexPathForRow:original inSection:indexPath.section];
-//         return %orig(tv, mapped);                       // ← 翻译后交给微信
+//         return %orig(tv, mapped);
 //     }
-//     return %orig;                                       // ← 不过滤，交给微信
+//     return %orig;
 // }
 //
 // %end
 //
-// 注意：缓存用的 gWGGRememberedConversations 启用时需要在上面单独声明。
+// 注意：这三个方法要钩在"真正给首页 table 供数的那个类"上。
+//       用阶段一的 WGGDumpViewTree 日志看 table 的 dataSource 是谁 —— 很可能不是控制器本身。
 
 // ===========================================================================
 // MARK: - 入口
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups loaded");
+        WGGLogMessage(@"WeChatGlassGroups loaded（阶段一：探测 + 抽屉 UI）");
 
-        // 阶段一：先探测真实类名（把日志贴回来，才能写阶段二的钩子）
+        // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
 
-        // 提前加载配置（每次启动读一次 NSUserDefaults）
+        // 提前把数据层拉起来（会顺带完成旧格式迁移）
         (void)[WGGGroupStore shared];
     }
 }

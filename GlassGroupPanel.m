@@ -2,147 +2,177 @@
 //  GlassGroupPanel.m
 //  WeChatGlassGroups
 //
-//  按效果图（1179x2556 @3x）反推的尺寸，换算成 pt 后写在下面。
-//  所有"魔法数字"都标了来源注释，改起来有依据。
+//  【UI 层】实现。布局思路：
+//
+//   抽屉（悬浮玻璃卡片，不是贴边）
+//   ┌──────────────────────────┐
+//   │ (avatar)  #无趣           │  ← 头部（紧凑）
+//   │           life is ...     │
+//   │  ──────────────────────  │
+//   │  › All               128 │  ← 分组行（可滚动，动态数量）
+//   │  › Family              3 │
+//   │  › Chats              12 │
+//   │  ...                     │
+//   │  ┌────────────────────┐  │
+//   │  │ 🔍 搜索会话         │  │  ← 搜索框（可关）
+//   │  └────────────────────┘  │
+//   └──────────────────────────┘
+//
+//  所有尺寸常量集中在下面，改样式只改这一处。
 //
 
 #import "GlassGroupPanel.h"
 
-NSString *const WGGDefaultsKeyEnabled       = @"WGG.enabled";
-NSString *const WGGDefaultsKeyBlurAlpha     = @"WGG.blurAlpha";
-NSString *const WGGDefaultsKeyCornerRadius  = @"WGG.cornerRadius";
-NSString *const WGGDefaultsKeySelectedGroup = @"WGG.selectedGroup";
-NSString *const WGGDefaultsKeyGroupMap      = @"WGG.groupMap";
+// 注意：WGGGroupAllName 这个常量的**定义**放在 GroupStore.m（数据层拥有这个概念），
+// 这里只通过头文件里的 extern 声明使用它。
+// 千万不要在这里再写一遍定义 —— 两个 .m 各定义一次 = 链接期 duplicate symbol 报错。
 
-// ---- 从效果图量出来的尺寸（@3x 像素 ÷ 3 = pt）----
-static const CGFloat kSidePadding   = 20.0;  // 左右留白：60px
-static const CGFloat kHeroWidth     = 178.0; // 左侧大图宽：535px
-static const CGFloat kHeroGap       = 12.0;  // 大图与右侧卡片间距：35px
-static const CGFloat kHeroRadius    = 20.0;  // 大图圆角
-static const CGFloat kAvatarSize    = 52.0;  // 卡片内圆形头像：150px
-static const CGFloat kPillHeight    = 72.0;  // 分组按钮高：215px
-static const CGFloat kPillSpacing   = 10.0;  // 按钮间距
-static const CGFloat kDividerGapTop = 24.0;  // 卡片底 → XXX 的间距
-static const CGFloat kDividerGapBot = 16.0;  // XXX → 第一个按钮的间距
-static const CGFloat kPillTextLeft  = 32.0;  // 按钮内文字距左边缘（箭头 29pt + 间距）
+// ---- 尺寸 ----
+static const CGFloat kDrawerDefaultWidth = 268.0;
+static const CGFloat kDrawerEdgeInset    = 8.0;   // 抽屉离屏幕左边/上下的距离（留出投影空间）
+static const CGFloat kDrawerRadius       = 28.0;  // 大圆角 = 液态玻璃感
+static const CGFloat kContentInset       = 16.0;
+static const CGFloat kRowHeight          = 48.0;
+static const CGFloat kRowSpacing         = 8.0;
+static const CGFloat kRowRadius          = 16.0;
+static const CGFloat kTriggerSize        = 46.0;
+static const CGFloat kAvatarSize         = 38.0;
+static const CGFloat kSearchHeight       = 40.0;
 
-NSString *WGGGroupName(WGGGroup g) {
-    switch (g) {
-        case WGGGroupFamily:  return @"Family";
-        case WGGGroupChats:   return @"Chats";
-        case WGGGroupGroup:   return @"Group";
-        case WGGGroupService: return @"Service";
-        case WGGGroupAll:     return @"All";
-    }
-    return @"Chats";
-}
-
-WGGGroup WGGGroupFromName(NSString *name) {
-    if (![name isKindOfClass:[NSString class]]) return WGGGroupChats;
-    static NSDictionary<NSString *, NSNumber *> *map;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        map = @{ @"Family":  @(WGGGroupFamily),
-                 @"Chats":   @(WGGGroupChats),
-                 @"Group":   @(WGGGroupGroup),
-                 @"Service": @(WGGGroupService),
-                 @"All":     @(WGGGroupAll) };
-    });
-    NSNumber *n = map[name];
-    return n ? (WGGGroup)n.integerValue : WGGGroupChats;
-}
-
-// 统一的玻璃外观：给任何 view 加"白玻璃 + 发丝描边 + 柔和投影"
+/// 统一的"液态玻璃"外观：白玻璃 + 发丝描边 + 柔和外阴影。
+/// 注意 clipsToBounds = NO 是为了让阴影能画出来；
+/// 真正的圆角裁切交给内部的 UIVisualEffectView。
 static void WGGApplyGlassChrome(UIView *v, CGFloat radius) {
     v.layer.cornerRadius = radius;
     v.layer.cornerCurve = kCACornerCurveContinuous;
-    v.layer.borderWidth = 1.0;
-    v.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
+    v.layer.borderWidth = 0.5;
+    v.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.55].CGColor;
     v.layer.shadowColor = [UIColor blackColor].CGColor;
-    v.layer.shadowOpacity = 0.06f;
-    v.layer.shadowRadius = 10.0;
-    v.layer.shadowOffset = CGSizeMake(0, 4);
-    v.clipsToBounds = NO;   // 投影需要
+    v.layer.shadowOpacity = 0.16f;
+    v.layer.shadowRadius = 24.0;
+    v.layer.shadowOffset = CGSizeMake(0, 10);
+    v.clipsToBounds = NO;
 }
 
-// ---------------------------------------------------------------------------
-// 分组按钮：一个整圆角的玻璃胶囊，[›  标题] 靠左排列
-// 效果图里箭头在左、文字紧随其后，右边大片留白 —— 和"箭头在最右"的常见做法相反
-// ---------------------------------------------------------------------------
-@interface WGGPillButton : UIControl
-@property (nonatomic, strong) UILabel *titleTextLabel;
-@property (nonatomic, strong) UIImageView *chevron;
+/// 配置一个"液态玻璃"模糊层。
+///
+/// ⚠️ 刻意写成 void 而不是"返回已创建好的 blur"：
+///    本工程是 MRC。如果 helper 返回 autorelease 对象、调用方又把结果直接赋给
+///    strong 属性的 ivar（不走 setter 就不会 retain），再在 dealloc 里 release，
+///    就会多减一次引用 → 野指针崩溃。
+///    让调用方自己 alloc（拿到 +1），dealloc 里 release，收支才平衡。
+static void WGGConfigureBlur(UIVisualEffectView *blur, CGFloat radius) {
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+    blur.layer.cornerRadius = radius;
+    blur.layer.cornerCurve = kCACornerCurveContinuous;
+    blur.clipsToBounds = YES;
+}
+
+/// 创建一个指定材质的模糊层（alloc 版本，返回 +1，调用方负责 release）。
+static UIVisualEffectView *WGGCreateBlur(CGFloat radius) {
+    UIVisualEffectView *blur =
+        [[UIVisualEffectView alloc] initWithEffect:
+         [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
+    WGGConfigureBlur(blur, radius);
+    return blur;   // +1 交给调用方
+}
+
+static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
+    if (@available(iOS 13.0, *)) {
+        return [UIImage systemImageNamed:name
+                       withConfiguration:[UIImageSymbolConfiguration configurationWithPointSize:size
+                                                                                        weight:weight]];
+    }
+    return nil;
+}
+
+#pragma mark - 分组行
+
+@interface WGGRowView : UIControl
+@property (nonatomic, copy)   NSString *groupName;
+@property (nonatomic, strong) UILabel *nameLabel;
+@property (nonatomic, strong) UILabel *badgeLabel;
+@property (nonatomic, strong) UIView *checkDot;
 @property (nonatomic, strong) UIVisualEffectView *blur;
-@property (nonatomic, assign) BOOL selectedPill;
+@property (nonatomic, assign) BOOL selectedRow;
+- (instancetype)initWithGroupName:(NSString *)groupName;
+- (void)setBadgeCount:(NSInteger)count;
+- (void)handleTap;
+- (void)refreshAppearanceAnimated:(BOOL)animated;
 @end
 
-@implementation WGGPillButton
+@implementation WGGRowView
 
-- (instancetype)initWithTitle:(NSString *)title {
+- (instancetype)initWithGroupName:(NSString *)groupName {
     if ((self = [super initWithFrame:CGRectZero])) {
+        _groupName = [groupName copy];
         self.translatesAutoresizingMaskIntoConstraints = NO;
 
-        _blur = [[UIVisualEffectView alloc] initWithEffect:
-                 [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
-        _blur.translatesAutoresizingMaskIntoConstraints = NO;
-        _blur.userInteractionEnabled = NO;
-        _blur.layer.cornerRadius = kPillHeight / 2.0;   // 完全圆角 = 胶囊
-        _blur.layer.cornerCurve = kCACornerCurveContinuous;
-        _blur.clipsToBounds = YES;
+        _blur = WGGCreateBlur(kRowRadius);   // +1，dealloc 里 release
         [self addSubview:_blur];
-        WGGApplyGlassChrome(self, kPillHeight / 2.0);
+        WGGApplyGlassChrome(self, kRowRadius);
+        self.layer.shadowOpacity = 0.05f;
+        self.layer.shadowRadius = 8.0;
+        self.layer.shadowOffset = CGSizeMake(0, 2);
 
-        _chevron = [[UIImageView alloc] init];
-        _chevron.translatesAutoresizingMaskIntoConstraints = NO;
-        _chevron.contentMode = UIViewContentModeScaleAspectFit;
-        _chevron.tintColor = [UIColor tertiaryLabelColor];
-        if (@available(iOS 13.0, *)) {
-            _chevron.image = [UIImage systemImageNamed:@"chevron.right"
-                                     withConfiguration:[UIImageSymbolConfiguration
-                                                        configurationWithPointSize:15
-                                                        weight:UIImageSymbolWeightSemibold]];
+        _nameLabel = [[UILabel alloc] init];
+        _nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _nameLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+        _nameLabel.textColor = [UIColor labelColor];
+        _nameLabel.text = groupName;
+
+        _badgeLabel = [[UILabel alloc] init];
+        _badgeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _badgeLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
+        _badgeLabel.textColor = [UIColor secondaryLabelColor];
+        _badgeLabel.textAlignment = NSTextAlignmentRight;
+        _badgeLabel.hidden = YES;
+
+        // 选中标记：一个小圆点，比勾更贴合"液态玻璃"的克制感
+        _checkDot = [[UIView alloc] init];
+        _checkDot.translatesAutoresizingMaskIntoConstraints = NO;
+        _checkDot.backgroundColor = [UIColor labelColor];
+        _checkDot.layer.cornerRadius = 3.0;
+        _checkDot.hidden = YES;
+
+        for (UIView *v in @[_nameLabel, _badgeLabel, _checkDot]) {
+            [_blur.contentView addSubview:v];
         }
 
-        _titleTextLabel = [[UILabel alloc] init];
-        _titleTextLabel.translatesAutoresizingMaskIntoConstraints = NO;
-        _titleTextLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightRegular];
-        _titleTextLabel.textColor = [UIColor labelColor];
-        _titleTextLabel.text = title;
-
-        [_blur.contentView addSubview:_chevron];
-        [_blur.contentView addSubview:_titleTextLabel];
-
+        UILayoutGuide *m = _blur.contentView.layoutMarginsGuide;
         [NSLayoutConstraint activateConstraints:@[
             [_blur.topAnchor constraintEqualToAnchor:self.topAnchor],
             [_blur.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
             [_blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
 
-            // 箭头靠左，垂直居中
-            [_chevron.leadingAnchor constraintEqualToAnchor:_blur.contentView.leadingAnchor constant:14],
-            [_chevron.centerYAnchor constraintEqualToAnchor:_blur.contentView.centerYAnchor],
-            [_chevron.widthAnchor constraintEqualToConstant:10],
-            [_chevron.heightAnchor constraintEqualToConstant:17],
+            [_checkDot.leadingAnchor constraintEqualToAnchor:m.leadingAnchor constant:2],
+            [_checkDot.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [_checkDot.widthAnchor constraintEqualToConstant:6],
+            [_checkDot.heightAnchor constraintEqualToConstant:6],
 
-            // 文字紧跟箭头，与左内边距 kPillTextLeft 对齐（20pt 字号 / 20pt 常规字重）
-            [_titleTextLabel.leadingAnchor constraintEqualToAnchor:_blur.contentView.leadingAnchor
-                                                          constant:kPillTextLeft],
-            [_titleTextLabel.centerYAnchor constraintEqualToAnchor:_blur.contentView.centerYAnchor],
+            [_nameLabel.leadingAnchor constraintEqualToAnchor:_checkDot.trailingAnchor constant:8],
+            [_nameLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+
+            [_badgeLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+            [_badgeLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [_badgeLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:_nameLabel.trailingAnchor
+                                                                  constant:8],
+            [_badgeLabel.widthAnchor constraintGreaterThanOrEqualToConstant:24],
         ]];
 
+        [self refreshAppearanceAnimated:NO];
         [self addTarget:self action:@selector(handleTap) forControlEvents:UIControlEventTouchUpInside];
-        [self refreshChromeAnimated:NO];
     }
     return self;
 }
 
 - (void)handleTap {
     [self sendActionsForControlEvents:UIControlEventValueChanged];
-    // 效果图没有明显选中态，这里给一个很轻的按压缩放，避免"点了没反应"的错觉
     [UIView animateWithDuration:0.10 animations:^{
-        self.transform = CGAffineTransformMakeScale(0.985, 0.985);
+        self.transform = CGAffineTransformMakeScale(0.97, 0.97);
     } completion:^(BOOL finished) {
-        [UIView animateWithDuration:0.16
+        [UIView animateWithDuration:0.18
                               delay:0
              usingSpringWithDamping:0.7
               initialSpringVelocity:0.4
@@ -152,27 +182,24 @@ static void WGGApplyGlassChrome(UIView *v, CGFloat radius) {
     }];
 }
 
-- (void)setSelectedPill:(BOOL)selectedPill {
-    if (_selectedPill == selectedPill) return;
-    _selectedPill = selectedPill;
-    [self refreshChromeAnimated:YES];
+- (void)setSelectedRow:(BOOL)selectedRow {
+    if (_selectedRow == selectedRow) return;
+    _selectedRow = selectedRow;
+    [self refreshAppearanceAnimated:YES];
 }
 
-- (void)refreshChromeAnimated:(BOOL)animated {
+- (void)refreshAppearanceAnimated:(BOOL)animated {
     void (^apply)(void) = ^{
-        if (self.selectedPill) {
-            // 选中：白色更实、描边更亮、标题加粗
-            self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.75];
+        if (self.selectedRow) {
+            self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
             self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:1.0].CGColor;
-            self.titleTextLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
-            self.titleTextLabel.textColor = [UIColor labelColor];
-            self.chevron.tintColor = [UIColor secondaryLabelColor];
+            self.nameLabel.textColor = [UIColor labelColor];
+            self.checkDot.hidden = NO;
         } else {
-            self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
-            self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.85].CGColor;
-            self.titleTextLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightRegular];
-            self.titleTextLabel.textColor = [UIColor labelColor];
-            self.chevron.tintColor = [UIColor tertiaryLabelColor];
+            self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+            self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
+            self.nameLabel.textColor = [UIColor secondaryLabelColor];
+            self.checkDot.hidden = YES;
         }
     };
     if (animated) {
@@ -182,340 +209,554 @@ static void WGGApplyGlassChrome(UIView *v, CGFloat radius) {
     }
 }
 
+- (void)setBadgeCount:(NSInteger)count {
+    if (count <= 0) {
+        _badgeLabel.hidden = YES;
+        _badgeLabel.text = nil;
+        return;
+    }
+    _badgeLabel.hidden = NO;
+    _badgeLabel.text = count > 999 ? @"999+" : [NSString stringWithFormat:@"%ld", (long)count];
+}
+
+- (void)dealloc {
+    [_groupName release];
+    [_nameLabel release];
+    [_badgeLabel release];
+    [_checkDot release];
+    [_blur release];
+    [super dealloc];
+}
+
 @end
 
-// ---------------------------------------------------------------------------
-// 主面板
-// ---------------------------------------------------------------------------
+#pragma mark - 抽屉面板
+
 @interface GlassGroupPanel ()
-@property (nonatomic, strong) UIView *heroCard;         // 左：大图卡
-@property (nonatomic, strong) UIImageView *heroImageView;
-@property (nonatomic, strong) UIView *profileCard;      // 右：个人信息卡
-@property (nonatomic, strong) UIVisualEffectView *profileBlur;
+@property (nonatomic, strong) UIVisualEffectView *glass;
 @property (nonatomic, strong) UIImageView *avatarView;
 @property (nonatomic, strong) UILabel *titleLabel;
 @property (nonatomic, strong) UILabel *subtitleLabel;
-@property (nonatomic, strong) UILabel *slashLabel;
-@property (nonatomic, strong) UILabel *dateLabel;
-@property (nonatomic, strong) UILabel *dividerLabel;    // 那三个 X
-@property (nonatomic, strong) NSMutableArray<WGGPillButton *> *pills;
-@property (nonatomic, copy) NSArray<NSString *> *groupTitles;
-@property (nonatomic, assign) WGGGroup selectedGroup;
-// 注意：glassAlpha / cornerRadius 在头文件里已经是 readwrite，
-//       不能再在 class extension 里重复声明（会报 illegal redeclaration）。
+@property (nonatomic, strong) UILabel *sectionLabel;
+@property (nonatomic, strong) UIScrollView *scrollView;
+@property (nonatomic, strong) UIStackView *rowStack;
+@property (nonatomic, strong) NSMutableArray<WGGRowView *> *rows;
+@property (nonatomic, strong) UIVisualEffectView *searchBlur;
+@property (nonatomic, strong) UITextField *searchField;
+@property (nonatomic, strong) NSLayoutConstraint *widthConstraint;
+@property (nonatomic, strong) NSLayoutConstraint *searchHeightConstraint;
+@property (nonatomic, strong) NSDictionary<NSString *, NSNumber *> *badges;
+@property (nonatomic, assign) BOOL didBuildHierarchy;
+
+// 私有方法显式声明：避免"方法定义在调用点之后"在 -Werror 下出问题
+- (void)buildHierarchy;
+- (void)refreshSelectionAppearance;
+- (void)rowTapped:(WGGRowView *)sender;
+- (void)searchChanged;
+- (void)applySearchVisibility;
 @end
 
 @implementation GlassGroupPanel
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
+        _groupNames = [(NSArray<NSString *> *)@[ WGGGroupAllName ] copy];
+        _drawerWidth = kDrawerDefaultWidth;
+        _glassAlpha = 0.95;
+        _cornerRadius = kDrawerRadius;
+        _searchEnabled = YES;
+        _rows = [[NSMutableArray alloc] init];
+        _badges = nil;
         self.translatesAutoresizingMaskIntoConstraints = NO;
         self.backgroundColor = [UIColor clearColor];
-        _selectedGroup = WGGGroupChats;
-        _glassAlpha = 1.0;
-        _cornerRadius = kHeroRadius;
-        _groupTitles = @[ @"Family", @"Chats", @"Group", @"Service" ];
-        _pills = [NSMutableArray array];
-
-        [self buildHeroAndProfile];
-        [self buildDivider];
-        [self buildPills];
+        [self buildHierarchy];
     }
     return self;
 }
 
-// ---------- 上部：左大图 + 右信息卡 ----------
-- (void)buildHeroAndProfile {
-    _heroCard = [[UIView alloc] init];
-    _heroCard.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:_heroCard];
-    WGGApplyGlassChrome(_heroCard, kHeroRadius);
+#pragma mark 构建视图
 
-    _heroImageView = [[UIImageView alloc] init];
-    _heroImageView.translatesAutoresizingMaskIntoConstraints = NO;
-    _heroImageView.contentMode = UIViewContentModeScaleAspectFill;
-    _heroImageView.clipsToBounds = YES;
-    _heroImageView.layer.cornerRadius = kHeroRadius;
-    _heroImageView.layer.cornerCurve = kCACornerCurveContinuous;
-    // 效果图是黑白叶子照。素材还没提供，先用灰阶渐变占位，
-    // 你之后调用 -setHeroImage: 换成真图即可。
-    _heroImageView.backgroundColor = [UIColor colorWithWhite:0.85 alpha:1.0];
-    [_heroCard addSubview:_heroImageView];
+- (void)buildHierarchy {
+    if (_didBuildHierarchy) return;
+    _didBuildHierarchy = YES;
 
-    _profileCard = [[UIView alloc] init];
-    _profileCard.translatesAutoresizingMaskIntoConstraints = NO;
-    [self addSubview:_profileCard];
-    WGGApplyGlassChrome(_profileCard, kHeroRadius);
-    // 效果图里右侧卡片是"白玻璃"而不是普通磨砂，加一层更实的高光
-    _profileCard.backgroundColor = [UIColor clearColor];
-
-    _profileBlur = [[UIVisualEffectView alloc] initWithEffect:
-                    [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
-    _profileBlur.translatesAutoresizingMaskIntoConstraints = NO;
-    _profileBlur.layer.cornerRadius = kHeroRadius;
-    _profileBlur.layer.cornerCurve = kCACornerCurveContinuous;
-    _profileBlur.clipsToBounds = YES;
-    _profileBlur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.55];
-    [_profileCard addSubview:_profileBlur];
+    _glass = WGGCreateBlur(_cornerRadius);   // +1，dealloc 里 release
+    _glass.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.5];
+    [self addSubview:_glass];
+    WGGApplyGlassChrome(self, _cornerRadius);
 
     _avatarView = [[UIImageView alloc] init];
     _avatarView.translatesAutoresizingMaskIntoConstraints = NO;
-    _avatarView.backgroundColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+    _avatarView.backgroundColor = [UIColor colorWithWhite:0.88 alpha:1.0];
     _avatarView.layer.cornerRadius = kAvatarSize / 2.0;
     _avatarView.clipsToBounds = YES;
     _avatarView.contentMode = UIViewContentModeScaleAspectFill;
 
     _titleLabel = [[UILabel alloc] init];
     _titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _titleLabel.font = [UIFont systemFontOfSize:20 weight:UIFontWeightSemibold];
+    _titleLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
     _titleLabel.textColor = [UIColor labelColor];
-    _titleLabel.textAlignment = NSTextAlignmentCenter;
     _titleLabel.text = @"#无趣";
 
     _subtitleLabel = [[UILabel alloc] init];
     _subtitleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _subtitleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightRegular];
+    UIFont *serif = [UIFont fontWithName:@"TimesNewRomanPS-ItalicMT" size:12];
+    _subtitleLabel.font = serif ?: [UIFont systemFontOfSize:12];
     _subtitleLabel.textColor = [UIColor secondaryLabelColor];
-    _subtitleLabel.textAlignment = NSTextAlignmentCenter;
     _subtitleLabel.text = @"life is but a dream";
 
-    // 效果图里那一行是斜体的 "/"，用的是衬线斜体，不是系统常规字重
-    _slashLabel = [[UILabel alloc] init];
-    _slashLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    UIFont *serifItalic = [UIFont fontWithName:@"TimesNewRomanPS-ItalicMT" size:14];
-    _slashLabel.font = serifItalic ?: [UIFont systemFontOfSize:14];
-    _slashLabel.textColor = [UIColor secondaryLabelColor];
-    _slashLabel.textAlignment = NSTextAlignmentCenter;
-    _slashLabel.text = @"/";
+    _sectionLabel = [[UILabel alloc] init];
+    _sectionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _sectionLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    _sectionLabel.textColor = [UIColor tertiaryLabelColor];
+    _sectionLabel.text = @"分组";
 
-    _dateLabel = [[UILabel alloc] init];
-    _dateLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    UIFont *serifItalicSmall = [UIFont fontWithName:@"TimesNewRomanPS-ItalicMT" size:12];
-    _dateLabel.font = serifItalicSmall ?: [UIFont monospacedDigitSystemFontOfSize:12
-                                                                         weight:UIFontWeightRegular];
-    _dateLabel.textColor = [UIColor secondaryLabelColor];
-    _dateLabel.textAlignment = NSTextAlignmentCenter;
-    _dateLabel.text = @"0920";
+    _scrollView = [[UIScrollView alloc] init];
+    _scrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    _scrollView.showsVerticalScrollIndicator = NO;
+    _scrollView.alwaysBounceVertical = NO;
 
-    for (UIView *v in @[_avatarView, _titleLabel, _subtitleLabel, _slashLabel, _dateLabel]) {
-        [_profileBlur.contentView addSubview:v];
+    _rowStack = [[UIStackView alloc] init];
+    _rowStack.translatesAutoresizingMaskIntoConstraints = NO;
+    _rowStack.axis = UILayoutConstraintAxisVertical;
+    _rowStack.spacing = kRowSpacing;
+    _rowStack.alignment = UIStackViewAlignmentFill;
+    [_scrollView addSubview:_rowStack];
+
+    _searchBlur = WGGCreateBlur(kSearchHeight / 2.0);   // +1，dealloc 里 release
+    _searchBlur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+    _searchBlur.layer.borderWidth = 0.5;
+    _searchBlur.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
+    // 注意：这里**不要**加进 _glass.contentView，统一在下面那个循环里加，
+    //       加两次虽然不会崩，但会让 z 顺序变得难以预料。
+
+    UIImageView *searchIcon = [[UIImageView alloc] init];
+    searchIcon.translatesAutoresizingMaskIntoConstraints = NO;
+    searchIcon.image = WGGSymbol(@"magnifyingglass", 15, UIFontWeightRegular);
+    searchIcon.tintColor = [UIColor secondaryLabelColor];
+    searchIcon.contentMode = UIViewContentModeScaleAspectFit;
+    [_searchBlur.contentView addSubview:searchIcon];
+
+    _searchField = [[UITextField alloc] init];
+    _searchField.translatesAutoresizingMaskIntoConstraints = NO;
+    _searchField.font = [UIFont systemFontOfSize:14 weight:UIFontWeightRegular];
+    _searchField.textColor = [UIColor labelColor];
+    _searchField.placeholder = @"搜索会话";
+    _searchField.returnKeyType = UIReturnKeySearch;
+    _searchField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    [_searchField addTarget:self
+                     action:@selector(searchChanged)
+           forControlEvents:UIControlEventEditingChanged];
+    [_searchBlur.contentView addSubview:_searchField];
+
+    // ⚠️ 这几个必须全部加进 _glass.contentView，一个都不能漏。
+    //    漏掉任何一个，它的约束和 layoutMarginsGuide 就没有共同祖先，
+    //    激活约束时会直接崩："Unable to activate constraint with anchors ... no common ancestor"。
+    for (UIView *v in @[_avatarView, _titleLabel, _subtitleLabel,
+                        _sectionLabel, _scrollView, _searchBlur]) {
+        [_glass.contentView addSubview:v];
     }
 
-    // 约束
-    UILayoutGuide *m = _profileBlur.contentView.layoutMarginsGuide;
-    CGFloat cardHalf = kSidePadding + kHeroWidth + kHeroGap;   // 右侧卡片左边缘的 x
+    UILayoutGuide *m = _glass.contentView.layoutMarginsGuide;
 
     [NSLayoutConstraint activateConstraints:@[
-        // 大图卡：固定宽，高由右侧卡片撑开
-        [_heroCard.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:kSidePadding],
-        [_heroCard.topAnchor constraintEqualToAnchor:self.topAnchor],
-        [_heroCard.widthAnchor constraintEqualToConstant:kHeroWidth],
+        // 玻璃底
+        [_glass.topAnchor constraintEqualToAnchor:self.topAnchor],
+        [_glass.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+        [_glass.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+        [_glass.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
 
-        [_heroImageView.topAnchor constraintEqualToAnchor:_heroCard.topAnchor],
-        [_heroImageView.bottomAnchor constraintEqualToAnchor:_heroCard.bottomAnchor],
-        [_heroImageView.leadingAnchor constraintEqualToAnchor:_heroCard.leadingAnchor],
-        [_heroImageView.trailingAnchor constraintEqualToAnchor:_heroCard.trailingAnchor],
-
-        // 信息卡：从大图右侧一直顶到右边距
-        [_profileCard.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:cardHalf],
-        [_profileCard.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-kSidePadding],
-        [_profileCard.topAnchor constraintEqualToAnchor:_heroCard.topAnchor],
-        [_profileCard.bottomAnchor constraintEqualToAnchor:_heroCard.bottomAnchor],
-
-        [_profileBlur.topAnchor constraintEqualToAnchor:_profileCard.topAnchor],
-        [_profileBlur.bottomAnchor constraintEqualToAnchor:_profileCard.bottomAnchor],
-        [_profileBlur.leadingAnchor constraintEqualToAnchor:_profileCard.leadingAnchor],
-        [_profileBlur.trailingAnchor constraintEqualToAnchor:_profileCard.trailingAnchor],
-
-        // 头像在卡片内水平居中
-        [_avatarView.centerXAnchor constraintEqualToAnchor:m.centerXAnchor],
+        // 头
         [_avatarView.topAnchor constraintEqualToAnchor:m.topAnchor],
+        [_avatarView.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
         [_avatarView.widthAnchor constraintEqualToConstant:kAvatarSize],
         [_avatarView.heightAnchor constraintEqualToConstant:kAvatarSize],
 
-        [_titleLabel.topAnchor constraintEqualToAnchor:_avatarView.bottomAnchor constant:2],
-        [_titleLabel.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
-        [_titleLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [_titleLabel.leadingAnchor constraintEqualToAnchor:_avatarView.trailingAnchor constant:10],
+        [_titleLabel.topAnchor constraintEqualToAnchor:_avatarView.topAnchor constant:2],
+        [_titleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:m.trailingAnchor],
 
-        [_subtitleLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:2],
-        [_subtitleLabel.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
-        [_subtitleLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [_subtitleLabel.leadingAnchor constraintEqualToAnchor:_titleLabel.leadingAnchor],
+        [_subtitleLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:1],
+        [_subtitleLabel.trailingAnchor constraintLessThanOrEqualToAnchor:m.trailingAnchor],
 
-        [_slashLabel.topAnchor constraintEqualToAnchor:_subtitleLabel.bottomAnchor constant:10],
-        [_slashLabel.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
-        [_slashLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        // 分组标题
+        [_sectionLabel.topAnchor constraintEqualToAnchor:_avatarView.bottomAnchor constant:18],
+        [_sectionLabel.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [_sectionLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
 
-        [_dateLabel.topAnchor constraintEqualToAnchor:_slashLabel.bottomAnchor constant:2],
-        [_dateLabel.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
-        [_dateLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        // 滚动区
+        [_scrollView.topAnchor constraintEqualToAnchor:_sectionLabel.bottomAnchor constant:8],
+        [_scrollView.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [_scrollView.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
 
-        // 卡片高度 = 头像 + 文字链 + 底部内边距（同时决定大图高度 → 两边等高）
-        [_dateLabel.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+        [_rowStack.topAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.topAnchor],
+        [_rowStack.bottomAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.bottomAnchor],
+        [_rowStack.leadingAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.leadingAnchor],
+        [_rowStack.trailingAnchor constraintEqualToAnchor:_scrollView.contentLayoutGuide.trailingAnchor],
+        [_rowStack.widthAnchor constraintEqualToAnchor:_scrollView.frameLayoutGuide.widthAnchor],
+
+        // 搜索框
+        [_searchBlur.topAnchor constraintGreaterThanOrEqualToAnchor:_scrollView.bottomAnchor constant:10],
+        [_searchBlur.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [_searchBlur.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [_searchBlur.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+
+        [searchIcon.leadingAnchor constraintEqualToAnchor:_searchBlur.contentView.leadingAnchor constant:12],
+        [searchIcon.centerYAnchor constraintEqualToAnchor:_searchBlur.contentView.centerYAnchor],
+        [searchIcon.widthAnchor constraintEqualToConstant:16],
+        [searchIcon.heightAnchor constraintEqualToConstant:16],
+
+        [_searchField.leadingAnchor constraintEqualToAnchor:searchIcon.trailingAnchor constant:8],
+        [_searchField.trailingAnchor constraintEqualToAnchor:_searchBlur.contentView.trailingAnchor constant:-10],
+        [_searchField.centerYAnchor constraintEqualToAnchor:_searchBlur.contentView.centerYAnchor],
     ]];
+
+    _searchHeightConstraint =
+        [_searchBlur.heightAnchor constraintEqualToConstant:kSearchHeight];
+    _searchHeightConstraint.active = YES;
+
+    // 面板宽度（可调）
+    _widthConstraint = [self.widthAnchor constraintEqualToConstant:_drawerWidth];
+    _widthConstraint.active = YES;
+
+    [self applySearchVisibility];
+    [self reloadGroupRows];
 }
 
-// ---------- 中间那三个 X ----------
-- (void)buildDivider {
-    _dividerLabel = [[UILabel alloc] init];
-    _dividerLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    _dividerLabel.text = @"X X X";
-    _dividerLabel.textAlignment = NSTextAlignmentCenter;
-    _dividerLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    // 效果图里是很淡的浅灰，不是正文灰
-    _dividerLabel.textColor = [UIColor colorWithWhite:0.78 alpha:1.0];
-    [self addSubview:_dividerLabel];
+#pragma mark 分组行重建
 
-    [NSLayoutConstraint activateConstraints:@[
-        [_dividerLabel.topAnchor constraintEqualToAnchor:_heroCard.bottomAnchor constant:kDividerGapTop],
-        [_dividerLabel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:kSidePadding],
-        [_dividerLabel.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-kSidePadding],
-    ]];
-}
-
-// ---------- 下部：4 个分组胶囊 ----------
-- (void)buildPills {
-    UIView *previous = nil;
-    for (NSUInteger i = 0; i < self.groupTitles.count; i++) {
-        WGGPillButton *pill = [[WGGPillButton alloc] initWithTitle:self.groupTitles[i]];
-        pill.tag = (NSInteger)i;
-        [pill addTarget:self action:@selector(pillTapped:) forControlEvents:UIControlEventValueChanged];
-        [self addSubview:pill];
-        [self.pills addObject:pill];
-
-        [NSLayoutConstraint activateConstraints:@[
-            [pill.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:kSidePadding],
-            [pill.trailingAnchor constraintEqualToAnchor:self.trailingAnchor constant:-kSidePadding],
-            [pill.heightAnchor constraintEqualToConstant:kPillHeight],
-        ]];
-
-        if (previous) {
-            [pill.topAnchor constraintEqualToAnchor:previous.bottomAnchor constant:kPillSpacing].active = YES;
-        } else {
-            [pill.topAnchor constraintEqualToAnchor:_dividerLabel.bottomAnchor constant:kDividerGapBot].active = YES;
-        }
-        previous = pill;
+- (void)reloadGroupRows {
+    if (!_didBuildHierarchy) return;
+    if (![NSThread isMainThread]) {
+        // UI 操作一律回主线程，避免后台线程改视图直接崩
+        [self performSelectorOnMainThread:@selector(reloadGroupRows) withObject:nil waitUntilDone:NO];
+        return;
     }
-    // 面板底边 = 最后一个胶囊底部
-    if (previous) {
-        [previous.bottomAnchor constraintEqualToAnchor:self.bottomAnchor].active = YES;
+
+    for (WGGRowView *row in _rows) {
+        [_rowStack removeArrangedSubview:row];
+        [row removeFromSuperview];
     }
+    [_rows removeAllObjects];
+
+    for (NSString *name in _groupNames) {
+        WGGRowView *row = [[[WGGRowView alloc] initWithGroupName:name] autorelease];
+        [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventValueChanged];
+        [row.heightAnchor constraintEqualToConstant:kRowHeight].active = YES;
+        [_rowStack addArrangedSubview:row];
+        [_rows addObject:row];
+        NSNumber *b = _badges[name];
+        [row setBadgeCount:b ? b.integerValue : 0];
+    }
+
     [self refreshSelectionAppearance];
-}
-
-// ---------- 交互 ----------
-- (void)pillTapped:(WGGPillButton *)sender {
-    WGGGroup g = (WGGGroup)sender.tag;
-    if (g == self.selectedGroup) return;
-    self.selectedGroup = g;
-    [self refreshSelectionAppearance];
-    [self persistToDefaults];
-
-    if ([self.delegate respondsToSelector:@selector(glassGroupPanel:didSelectGroup:)]) {
-        [self.delegate glassGroupPanel:self didSelectGroup:g];
-    }
 }
 
 - (void)refreshSelectionAppearance {
-    for (WGGPillButton *pill in self.pills) {
-        pill.selectedPill = ((WGGGroup)pill.tag == self.selectedGroup);
+    NSString *sel = _selectedGroupName ?: WGGGroupAllName;
+    for (WGGRowView *row in _rows) {
+        row.selectedRow = [row.groupName isEqualToString:sel];
     }
 }
 
-// ---------- 对外 API ----------
-- (void)setAvatarImage:(UIImage *)image        { self.avatarView.image = image; }
-- (void)setHeroImage:(UIImage *)image          { self.heroImageView.image = image; }
-
-- (void)setTitleText:(NSString *)title subtitle:(NSString *)subtitle date:(NSString *)date {
-    if (title)    self.titleLabel.text = title;
-    if (subtitle) self.subtitleLabel.text = subtitle;
-    if (date)     self.dateLabel.text = date;
+- (void)rowTapped:(WGGRowView *)sender {
+    NSString *name = sender.groupName;
+    if (!name) return;
+    if (![_selectedGroupName isEqualToString:name]) {
+        self.selectedGroupName = name;
+    }
+    if ([self.delegate respondsToSelector:@selector(glassGroupPanel:didSelectGroup:)]) {
+        [self.delegate glassGroupPanel:self didSelectGroup:name];
+    }
 }
 
-- (void)setBadgeCounts:(NSDictionary<NSNumber *, NSNumber *> *)counts {
-    // 效果图里没有角标位，这里保留接口但不渲染，
-    // 等你想加"分组未读数"时再在胶囊右侧补一个 label。
-    (void)counts;
+- (void)searchChanged {
+    if ([self.delegate respondsToSelector:@selector(glassGroupPanel:didChangeSearchText:)]) {
+        [self.delegate glassGroupPanel:self didChangeSearchText:_searchField.text ?: @""];
+    }
 }
 
-- (void)setGlassAlpha:(CGFloat)alpha {
-    _glassAlpha = MAX(0.0, MIN(1.0, alpha));
-    self.profileBlur.alpha = _glassAlpha;
-    for (WGGPillButton *p in self.pills) p.blur.alpha = _glassAlpha;
+- (void)resignSearchInput {
+    [_searchField resignFirstResponder];
 }
 
-- (void)setCornerRadius:(CGFloat)radius {
-    _cornerRadius = MAX(0.0, radius);
-    self.profileCard.layer.cornerRadius = _cornerRadius;
-    self.profileBlur.layer.cornerRadius = _cornerRadius;
-    self.heroCard.layer.cornerRadius = _cornerRadius;
-    self.heroImageView.layer.cornerRadius = _cornerRadius;
-    // 分组胶囊在效果图里是"完全圆角"（高度的一半），不跟随这个值，
-    // 否则改圆角会把胶囊变成方角卡片，和设计稿不符。
+#pragma mark 属性
+
+- (void)setGroupNames:(NSArray<NSString *> *)groupNames {
+    // 显式写开，不用 ?: —— MRC 下三元表达式混类型容易出意外，也让所有权一目了然
+    NSArray<NSString *> *copy = groupNames ? [groupNames copy] : [@[ WGGGroupAllName ] copy];
+    if ([_groupNames isEqualToArray:copy]) {
+        [copy release];
+        return;
+    }
+    [_groupNames release];
+    _groupNames = copy;
+    [self reloadGroupRows];
 }
 
-- (void)restoreFromDefaults {
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    NSNumber *alpha = [d objectForKey:WGGDefaultsKeyBlurAlpha];
-    NSNumber *radius = [d objectForKey:WGGDefaultsKeyCornerRadius];
-    NSNumber *sel = [d objectForKey:WGGDefaultsKeySelectedGroup];
-    if (alpha) self.glassAlpha = alpha.doubleValue;
-    if (radius) self.cornerRadius = radius.doubleValue;
-    if (sel) self.selectedGroup = (WGGGroup)sel.integerValue;
+- (void)setSelectedGroupName:(NSString *)selectedGroupName {
+    NSString *copy = [selectedGroupName copy];
+    if (copy == _selectedGroupName || [copy isEqualToString:_selectedGroupName]) {
+        [copy release];
+        return;
+    }
+    [_selectedGroupName release];
+    _selectedGroupName = copy;
     [self refreshSelectionAppearance];
 }
 
-- (void)persistToDefaults {
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    [d setDouble:self.glassAlpha forKey:WGGDefaultsKeyBlurAlpha];
-    [d setDouble:self.cornerRadius forKey:WGGDefaultsKeyCornerRadius];
-    [d setInteger:self.selectedGroup forKey:WGGDefaultsKeySelectedGroup];
+/// 注意：drawerWidth / glassAlpha / cornerRadius / searchEnabled 都是**自定义 setter**。
+/// 只要不写同名 getter，编译器仍会合成 ivar，所以这里能直接读写 _ivar。
+- (void)setDrawerWidth:(CGFloat)drawerWidth {
+    _drawerWidth = MAX(160.0, drawerWidth);
+    _widthConstraint.constant = _drawerWidth;
+}
+
+- (void)setGlassAlpha:(CGFloat)glassAlpha {
+    _glassAlpha = MAX(0.2, MIN(1.0, glassAlpha));
+    _glass.alpha = _glassAlpha;
+}
+
+- (void)setCornerRadius:(CGFloat)cornerRadius {
+    _cornerRadius = MAX(0.0, cornerRadius);
+    self.layer.cornerRadius = _cornerRadius;
+    _glass.layer.cornerRadius = _cornerRadius;
+}
+
+- (void)setSearchEnabled:(BOOL)searchEnabled {
+    _searchEnabled = searchEnabled;
+    [self applySearchVisibility];
+}
+
+- (void)applySearchVisibility {
+    if (!_didBuildHierarchy) return;
+    _searchBlur.hidden = !_searchEnabled;
+    _searchHeightConstraint.constant = _searchEnabled ? kSearchHeight : 0.0;
+    if (!_searchEnabled) [_searchField resignFirstResponder];
+}
+
+#pragma mark 对外 API
+
+- (void)setHeaderTitle:(NSString *)title subtitle:(NSString *)subtitle avatar:(UIImage *)avatar {
+    if (title) _titleLabel.text = title;
+    if (subtitle) _subtitleLabel.text = subtitle;
+    if (avatar) _avatarView.image = avatar;
+}
+
+- (void)setBadgeCounts:(NSDictionary<NSString *, NSNumber *> *)counts {
+    [_badges release];
+    _badges = [counts copy];
+    for (WGGRowView *row in _rows) {
+        NSNumber *b = _badges[row.groupName];
+        [row setBadgeCount:b ? b.integerValue : 0];
+    }
+}
+
+- (void)dealloc {
+    [_groupNames release];
+    [_selectedGroupName release];
+    [_glass release];
+    [_avatarView release];
+    [_titleLabel release];
+    [_subtitleLabel release];
+    [_sectionLabel release];
+    [_scrollView release];
+    [_rowStack release];
+    [_rows release];
+    [_searchBlur release];
+    [_searchField release];
+    [_widthConstraint release];
+    [_searchHeightConstraint release];
+    [_badges release];
+    [super dealloc];
 }
 
 @end
 
-#pragma mark - 底部搜索框
+#pragma mark - 抽屉宿主
 
-@implementation WGGSearchBar
+@interface WGGDrawerHost ()
+@property (nonatomic, strong) UIControl *overlay;
+@property (nonatomic, strong) UIButton *triggerButton;
+@property (nonatomic, strong) GlassGroupPanel *panel;
+@property (nonatomic, assign) BOOL panelVisible;
+@property (nonatomic, assign) BOOL animating;
+
+// 私有方法声明（同前：避免定义顺序带来的 -Werror 风险）
+- (void)overlayTapped;
+- (void)triggerTapped;
+- (void)applyTriggerVisibility;
+@end
+
+@implementation WGGDrawerHost
 
 - (instancetype)initWithFrame:(CGRect)frame {
     if ((self = [super initWithFrame:frame])) {
         self.translatesAutoresizingMaskIntoConstraints = NO;
+        self.backgroundColor = [UIColor clearColor];
 
-        UIVisualEffectView *blur = [[UIVisualEffectView alloc] initWithEffect:
-                                    [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
-        blur.translatesAutoresizingMaskIntoConstraints = NO;
-        blur.layer.cornerRadius = 24.0;
-        blur.layer.cornerCurve = kCACornerCurveContinuous;
-        blur.clipsToBounds = YES;
-        blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.45];
-        [self addSubview:blur];
-        WGGApplyGlassChrome(self, 24.0);
+        // 1) 遮罩：铺满，点击收起
+        _overlay = [[UIControl alloc] init];
+        _overlay.translatesAutoresizingMaskIntoConstraints = NO;
+        _overlay.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.16];
+        _overlay.hidden = YES;
+        _overlay.alpha = 0.0;
+        [_overlay addTarget:self action:@selector(overlayTapped) forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_overlay];
 
-        UIImageView *icon = [[UIImageView alloc] init];
-        icon.translatesAutoresizingMaskIntoConstraints = NO;
-        icon.contentMode = UIViewContentModeScaleAspectFit;
-        icon.tintColor = [UIColor labelColor];
-        if (@available(iOS 13.0, *)) {
-            icon.image = [UIImage systemImageNamed:@"magnifyingglass"
-                                 withConfiguration:[UIImageSymbolConfiguration
-                                                    configurationWithPointSize:20
-                                                    weight:UIImageSymbolWeightRegular]];
-        }
+        // 2) 抽屉面板
+        _panel = [[GlassGroupPanel alloc] initWithFrame:CGRectZero];
+        [self addSubview:_panel];
 
-        [blur.contentView addSubview:icon];
+        // 3) 悬浮触发按钮（最后加 → 在最上层，面板打开时还能点它收起）
+        //    buttonWithType: 返回 autorelease 对象；MRC 下要自己 retain 才能在 dealloc 里配对 release。
+        _triggerButton = [[UIButton buttonWithType:UIButtonTypeSystem] retain];
+        _triggerButton.translatesAutoresizingMaskIntoConstraints = NO;
+        [_triggerButton setImage:WGGSymbol(@"line.3.horizontal", 17, UIFontWeightSemibold)
+                        forState:UIControlStateNormal];
+        _triggerButton.tintColor = [UIColor labelColor];
+        _triggerButton.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.72];
+        _triggerButton.layer.cornerRadius = kTriggerSize / 2.0;
+        _triggerButton.layer.cornerCurve = kCACornerCurveContinuous;
+        _triggerButton.layer.borderWidth = 0.5;
+        _triggerButton.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.7].CGColor;
+        _triggerButton.layer.shadowColor = [UIColor blackColor].CGColor;
+        _triggerButton.layer.shadowOpacity = 0.16f;
+        _triggerButton.layer.shadowRadius = 10.0;
+        _triggerButton.layer.shadowOffset = CGSizeMake(0, 4);
+        [_triggerButton addTarget:self action:@selector(triggerTapped)
+                 forControlEvents:UIControlEventTouchUpInside];
+        [self addSubview:_triggerButton];
+
         [NSLayoutConstraint activateConstraints:@[
-            [blur.topAnchor constraintEqualToAnchor:self.topAnchor],
-            [blur.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
-            [blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
-            [blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
+            [_overlay.topAnchor constraintEqualToAnchor:self.topAnchor],
+            [_overlay.bottomAnchor constraintEqualToAnchor:self.bottomAnchor],
+            [_overlay.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
+            [_overlay.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
 
-            [icon.leadingAnchor constraintEqualToAnchor:blur.contentView.leadingAnchor constant:26],
-            [icon.centerYAnchor constraintEqualToAnchor:blur.contentView.centerYAnchor],
-            [icon.widthAnchor constraintEqualToConstant:22],
-            [icon.heightAnchor constraintEqualToConstant:22],
+            [_panel.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:kDrawerEdgeInset],
+            [_panel.topAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.topAnchor
+                                             constant:kDrawerEdgeInset],
+            [_panel.bottomAnchor constraintEqualToAnchor:self.safeAreaLayoutGuide.bottomAnchor
+                                                constant:-kDrawerEdgeInset],
+
+            [_triggerButton.leadingAnchor constraintEqualToAnchor:self.leadingAnchor constant:6],
+            [_triggerButton.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [_triggerButton.widthAnchor constraintEqualToConstant:kTriggerSize],
+            [_triggerButton.heightAnchor constraintEqualToConstant:kTriggerSize],
         ]];
+
+        self.animatedPresentation = YES;
+        [self applyTriggerVisibility];
     }
     return self;
+}
+
+#pragma mark 触摸穿透
+
+/// 关键：宿主铺满整个微信首页，如果什么都不做会把所有触摸都吃掉，
+/// 会话列表就点不动了。这里让"落在空白处的触摸"直接穿透给下层微信。
+- (UIView *)hitTest:(CGPoint)point withEvent:(UIEvent *)event {
+    UIView *hit = [super hitTest:point withEvent:event];
+    if (hit == self) return nil;   // 空白处 → 穿透
+    return hit;
+}
+
+#pragma mark 显示 / 隐藏
+
+- (void)showPanelAnimated:(BOOL)animated {
+    if (_panelVisible) return;
+    _panelVisible = YES;
+    _overlay.hidden = NO;
+    [_panel layoutIfNeeded];
+
+    CGFloat dx = -(self.panel.drawerWidth + kDrawerEdgeInset * 4 + 40.0);
+    _panel.transform = CGAffineTransformMakeTranslation(dx, 0);
+    _panel.alpha = 0.6;
+
+    void (^show)(void) = ^{
+        self.panel.transform = CGAffineTransformIdentity;
+        self.panel.alpha = 1.0;
+        self.overlay.alpha = 1.0;
+    };
+
+    if (animated && self.animatedPresentation) {
+        [UIView animateWithDuration:0.32
+                              delay:0
+             usingSpringWithDamping:0.86
+              initialSpringVelocity:0.6
+                            options:UIViewAnimationOptionAllowUserInteraction
+                         animations:show
+                         completion:nil];
+    } else {
+        show();
+    }
+}
+
+- (void)hidePanelAnimated:(BOOL)animated {
+    if (!_panelVisible) return;
+    _panelVisible = NO;
+    [_panel resignSearchInput];
+
+    CGFloat dx = -(self.panel.drawerWidth + kDrawerEdgeInset * 4 + 40.0);
+    void (^hide)(void) = ^{
+        self.panel.transform = CGAffineTransformMakeTranslation(dx, 0);
+        self.panel.alpha = 0.6;
+        self.overlay.alpha = 0.0;
+    };
+    void (^done)(BOOL) = ^(BOOL finished) {
+        self.overlay.hidden = YES;
+    };
+
+    if (animated && self.animatedPresentation) {
+        [UIView animateWithDuration:0.24 animations:hide completion:done];
+    } else {
+        hide();
+        done(YES);
+    }
+}
+
+- (BOOL)isPanelVisible {
+    return _panelVisible;
+}
+
+- (void)overlayTapped {
+    [self hidePanelAnimated:YES];
+}
+
+- (void)triggerTapped {
+    if (_panelVisible) {
+        [self hidePanelAnimated:YES];
+    } else {
+        [self showPanelAnimated:YES];
+    }
+}
+
+#pragma mark 属性
+
+- (void)setDelegate:(id<GlassGroupPanelDelegate>)delegate {
+    _delegate = delegate;
+    _panel.delegate = delegate;
+}
+
+- (void)setTriggerButtonHidden:(BOOL)triggerButtonHidden {
+    _triggerButtonHidden = triggerButtonHidden;
+    [self applyTriggerVisibility];
+}
+
+- (void)applyTriggerVisibility {
+    _triggerButton.hidden = _triggerButtonHidden;
+    if (_triggerButtonHidden && _panelVisible) {
+        [_overlay setHidden:NO];   // 按钮藏了也要能靠点遮罩收起
+    }
+}
+
+- (void)dealloc {
+    [_overlay release];
+    [_triggerButton release];
+    [_panel release];
+    [super dealloc];
 }
 
 @end
