@@ -26,6 +26,17 @@ ADDITIONAL_CFLAGS = -fno-objc-arc -Wno-deprecated-declarations -Wno-unused-varia
 # 语法严格一些，帮你早暴露问题
 ADDITIONAL_CFLAGS += -Wall -Wno-unused-function
 
+##############################################################################
+# 环境自检：THEOS 没设好时 make 会在 0 秒内失败，报错信息很难懂。
+# 加这两行守卫，直接把原因打出来。
+##############################################################################
+ifeq ($(THEOS),)
+  $(error 环境变量 THEOS 没有设置。请先: export THEOS=/path/to/theos)
+endif
+ifeq ($(wildcard $(THEOS)/makefiles/common.mk),)
+  $(error THEOS 指向的目录里找不到 makefiles/common.mk，当前 THEOS=$(THEOS))
+endif
+
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WeChatGlassGroups

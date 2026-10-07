@@ -20,18 +20,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 安装 Theos（含 Linux/macOS 都能用的打包链）
+      # 安装 Theos
       - name: Install Theos
         uses: Randomblock1/theos-action@v1
 
-      # 让 Theos 能找到 iOS SDK。macOS runner 自带 Xcode，
-      # 这里把 Xcode 里的 SDK 建个软链；如果 Theos 自带 $THEOS/sdks 则优先用它。
+      # ---------------------------------------------------------------------
+      # 诊断：theos-action 有时不会把 $THEOS 传给后面的步骤，
+      # 那样 make 会在 0 秒内就失败（连 Theos 的 common.mk 都找不到）。
+      # 这一段把真实路径找出来，并写进 $GITHUB_ENV 给后续步骤用。
+      # ---------------------------------------------------------------------
+      - name: Locate Theos
+        run: |
+          echo "THEOS(env) = '${THEOS}'"
+          echo "--- 常见安装位置 ---"
+          for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" "/opt/theos" "/Users/runner/theos"; do
+            if [ -d "$d/makefiles" ]; then
+              echo "FOUND: $d"
+            else
+              echo "not here: $d"
+            fi
+          done
+
+          if [ -z "$THEOS" ] || [ ! -d "$THEOS/makefiles" ]; then
+            for d in "$HOME/theos" "$GITHUB_WORKSPACE/theos" "/opt/theos" "/Users/runner/theos"; do
+              if [ -d "$d/makefiles" ]; then
+                echo "THEOS=$d" >> "$GITHUB_ENV"
+                echo "→ 选用 $d"
+                break
+              fi
+            done
+          else
+            echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+            echo "→ 沿用环境里的 $THEOS"
+          fi
+
+          echo "GITHUB_ENV 已写入"
+
       - name: Prepare SDK
         run: |
           echo "THEOS=$THEOS"
+          echo "--- 自带 SDK ---"
           ls -la "$THEOS/sdks" || true
           if [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
-            echo "Theos 没有自带 SDK，从 Xcode 拷贝一份 16.x SDK"
+            echo "Theos 没有自带 SDK，从 Xcode 拷贝一份"
             SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
             echo "Xcode SDK: $SDK_PATH"
             mkdir -p "$THEOS/sdks"
@@ -41,19 +72,24 @@ jobs:
 
       - name: Show toolchain
         run: |
+          echo "THEOS=$THEOS"
+          echo "PATH=$PATH"
+          which make
+          make --version | head -n1
           xcodebuild -version
-          echo "---"
           uname -m
 
       - name: Build package
         working-directory: WeChatGlassGroups
         run: |
-          make clean
-          make package FINALPACKAGE=1 DEBUG=0
+          echo "=== 开始编译 ==="
+          make clean 2>&1 || true
+          make package FINALPACKAGE=1 DEBUG=0 2>&1
 
       # 关键校验：确认 dylib 真的编成了 arm64e，且签名没丢。
       # 很多人卡在"装上了但插件不生效"，十次有九次是架构或签名不对。
       - name: Verify binary
+        if: success()
         working-directory: WeChatGlassGroups
         run: |
           set -e
@@ -68,12 +104,13 @@ jobs:
           otool -L "$DYLIB"
           echo "--- 检查是否误链 Swift 运行时（链了就会崩） ---"
           if otool -L "$DYLIB" | grep -q swift; then
-            echo "⚠️ 警告：链接了 Swift 运行时，检查是否混入了 Swift 代码"
+            echo "⚠️ 警告：链接了 Swift 运行时"
           else
             echo "OK：没有链接 Swift 运行时"
           fi
 
       - name: Collect deb
+        if: success()
         working-directory: WeChatGlassGroups
         run: |
           mkdir -p ../out
@@ -81,17 +118,18 @@ jobs:
           ls -la ../out
 
       - name: Upload deb
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: WeChatGlassGroups-deb
           path: out/*.deb
           if-no-files-found: error
 
-      # 编译日志里如果有我们自己的日志，一起带出来方便排查（可选）
+      # 编译中间产物，出问题时用它排错
       - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: build-log
-          path: WeChatGlassGroups/.theos/  # 编译中间产物，排错用
+          path: WeChatGlassGroups/.theos/
           if-no-files-found: ignore
