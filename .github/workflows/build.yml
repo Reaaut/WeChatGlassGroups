@@ -1,0 +1,97 @@
+name: Build Tweak
+
+# 在 macOS runner 上编译 Theos 插件。
+# 你在 Windows 上写完代码 push 上来就行，不用本地装任何工具链。
+#
+# 产物：Actions 页面 → 这次 run → 底部 Artifacts → 下载 WeChatGlassGroups-deb
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:        # 也可以在网页上点按钮手动触发
+
+jobs:
+  build:
+    # ⚠️ 必须是 macOS runner。Linux runner 编译 iOS Tweak 会缺私有框架 tbd，
+    #    这条路坑很深，不要改成 ubuntu-latest。
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 安装 Theos（含 Linux/macOS 都能用的打包链）
+      - name: Install Theos
+        uses: Randomblock1/theos-action@v1
+
+      # 让 Theos 能找到 iOS SDK。macOS runner 自带 Xcode，
+      # 这里把 Xcode 里的 SDK 建个软链；如果 Theos 自带 $THEOS/sdks 则优先用它。
+      - name: Prepare SDK
+        run: |
+          echo "THEOS=$THEOS"
+          ls -la "$THEOS/sdks" || true
+          if [ -z "$(ls -A "$THEOS/sdks" 2>/dev/null)" ]; then
+            echo "Theos 没有自带 SDK，从 Xcode 拷贝一份 16.x SDK"
+            SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+            echo "Xcode SDK: $SDK_PATH"
+            mkdir -p "$THEOS/sdks"
+            cp -R "$SDK_PATH" "$THEOS/sdks/iPhoneOS16.4.sdk"
+          fi
+          ls -la "$THEOS/sdks"
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          echo "---"
+          uname -m
+
+      - name: Build package
+        working-directory: WeChatGlassGroups
+        run: |
+          make clean
+          make package FINALPACKAGE=1 DEBUG=0
+
+      # 关键校验：确认 dylib 真的编成了 arm64e，且签名没丢。
+      # 很多人卡在"装上了但插件不生效"，十次有九次是架构或签名不对。
+      - name: Verify binary
+        working-directory: WeChatGlassGroups
+        run: |
+          set -e
+          DYLIB="$(find .theos/obj -name 'WeChatGlassGroups.dylib' | head -n1)"
+          echo "dylib: $DYLIB"
+          file "$DYLIB"
+          echo "--- 期望看到 arm64e ---"
+          lipo -archs "$DYLIB" || true
+          echo "--- 签名信息 ---"
+          codesign -dvvv "$DYLIB" 2>&1 || true
+          echo "--- 链接了哪些库 ---"
+          otool -L "$DYLIB"
+          echo "--- 检查是否误链 Swift 运行时（链了就会崩） ---"
+          if otool -L "$DYLIB" | grep -q swift; then
+            echo "⚠️ 警告：链接了 Swift 运行时，检查是否混入了 Swift 代码"
+          else
+            echo "OK：没有链接 Swift 运行时"
+          fi
+
+      - name: Collect deb
+        working-directory: WeChatGlassGroups
+        run: |
+          mkdir -p ../out
+          cp packages/*.deb ../out/ 2>/dev/null || cp *.deb ../out/
+          ls -la ../out
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: WeChatGlassGroups-deb
+          path: out/*.deb
+          if-no-files-found: error
+
+      # 编译日志里如果有我们自己的日志，一起带出来方便排查（可选）
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: WeChatGlassGroups/.theos/  # 编译中间产物，排错用
+          if-no-files-found: ignore

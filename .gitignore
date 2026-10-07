@@ -1,0 +1,15 @@
+# Theos 编译产物，不要提交
+.theos/
+packages/
+out/
+*.deb
+
+# macOS
+.DS_Store
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 注意：如果你要提交 Resources 里的图片素材，别把 Resources/ 加进来
