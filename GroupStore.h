@@ -73,6 +73,20 @@ typedef NS_ENUM(NSInteger, WGGAutoKind) {
                             active:(BOOL)active;
 @end
 
+#pragma mark - QQ 式分组段落（把分组插进会话列表用的数据模型）
+
+/// 一个分组的展示段：表头信息 + 组内会话在原始数组里的下标。
+/// 阶段二把聊天列表改成 QQ 好友分组样式时：
+///   * 每段插一行"分组表头"（组名 + 数量 + 折叠箭头）
+///   * 折叠的段只显示表头，不显示组内会话
+///   * indices 是"过滤后行号 → 原始数组下标"的映射，防越界全靠它
+@interface WGGSection : NSObject
+@property (nonatomic, copy, readonly) NSString *name;
+@property (nonatomic, assign, readonly) NSUInteger count;
+@property (nonatomic, assign, readonly) BOOL collapsed;
+@property (nonatomic, strong, readonly) NSArray<NSNumber *> *indices;
+@end
+
 #pragma mark - 数据仓库
 
 @interface WGGGroupStore : NSObject
@@ -127,6 +141,15 @@ typedef NS_ENUM(NSInteger, WGGAutoKind) {
 - (WGGFilterResult *)filterConversations:(nullable NSArray *)conversations;
 /// 各分组的会话数：@{ @"全部": @10, @"好友": @7, @"群聊": @3 }
 - (NSDictionary<NSString *, NSNumber *> *)countsForConversations:(nullable NSArray *)conversations;
+
+#pragma mark QQ 式分组（阶段二）
+/// 把会话数组切成若干段（好友 / 群聊 / 公众号 / 有成员的自定义分组）。
+/// 段顺序固定，折叠状态持久化。conversations 不会被修改。
+- (NSArray<WGGSection *> *)sectionsForConversations:(nullable NSArray *)conversations;
+- (BOOL)isCollapsedGroup:(NSString *)name;
+- (void)setCollapsed:(BOOL)collapsed forGroup:(NSString *)name;
+/// 切换折叠状态（点分组表头行时用）。
+- (void)toggleCollapsedForGroup:(NSString *)name;
 
 #pragma mark 设置项（UI 层读这些值配置自己）
 @property (nonatomic, assign) CGFloat glassAlpha;          // 0.0~1.0，默认 0.95

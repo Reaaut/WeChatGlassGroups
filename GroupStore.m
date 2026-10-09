@@ -86,6 +86,24 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
 
 #pragma mark - 数据仓库
 
+// QQ 式分段模型（只读属性，用类扩展转 readwrite 方便工厂方法赋值）
+@interface WGGSection ()
+@property (nonatomic, copy, readwrite) NSString *name;
+@property (nonatomic, assign, readwrite) NSUInteger count;
+@property (nonatomic, assign, readwrite) BOOL collapsed;
+@property (nonatomic, strong, readwrite) NSArray<NSNumber *> *indices;
+@end
+
+@implementation WGGSection
+
+- (void)dealloc {
+    [_name release];
+    [_indices release];
+    [super dealloc];
+}
+
+@end
+
 @interface WGGGroupStore () {
     dispatch_queue_t _saveQueue;
 }
@@ -674,6 +692,84 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
         }
     }
     return counts;
+}
+
+#pragma mark - QQ 式分组（阶段二数据模型）
+
+- (NSString *)collapsedKeyForGroup:(NSString *)name {
+    return [NSString stringWithFormat:@"collapsed.%@", name];
+}
+
+- (BOOL)isCollapsedGroup:(NSString *)name {
+    if (name.length == 0) return NO;
+    return [[self settingForKey:[self collapsedKeyForGroup:name] fallback:@NO] boolValue];
+}
+
+- (void)setCollapsed:(BOOL)collapsed forGroup:(NSString *)name {
+    if (name.length == 0) return;
+    [self setSetting:@(collapsed) forKey:[self collapsedKeyForGroup:name]];
+}
+
+- (void)toggleCollapsedForGroup:(NSString *)name {
+    [self setCollapsed:![self isCollapsedGroup:name] forGroup:name];
+}
+
+- (WGGSection *)sectionWithName:(NSString *)name
+                       collapsed:(BOOL)collapsed
+                         indices:(NSArray<NSNumber *> *)indices {
+    WGGSection *s = [[WGGSection alloc] init];
+    if (s) {
+        s.name = [name copy];
+        s.count = indices.count;
+        s.collapsed = collapsed;
+        s.indices = indices;
+    }
+    return [s autorelease];
+}
+
+- (NSArray<WGGSection *> *)sectionsForConversations:(NSArray *)conversations {
+    // 三个自动分组是固定段（QQ 也总是显示全部分组名，空的显示 0）
+    NSMutableDictionary<NSString *, NSMutableArray<NSNumber *> *> *buckets = [NSMutableDictionary dictionary];
+    for (NSString *n in WGGAutoGroupNames()) buckets[n] = [NSMutableArray array];
+    NSMutableArray<NSString *> *customOrder = [NSMutableArray array];
+
+    if ([conversations isKindOfClass:[NSArray class]]) {
+        for (NSUInteger i = 0; i < conversations.count; i++) {
+            id conv = conversations[i];
+            WGGAutoKind k = [WGGGroupStore autoKindForConversation:conv];
+            NSString *bucket = nil;
+            if (k == WGGAutoKindFriend)       bucket = WGGGroupFriendsName;
+            else if (k == WGGAutoKindGroup)   bucket = WGGGroupGroupsName;
+            else if (k == WGGAutoKindOfficial) bucket = WGGGroupOfficialName;
+
+            if (bucket) [buckets[bucket] addObject:@(i)];
+
+            // 自定义分组：按归属表算（一个会话可进多个自定义分组）
+            NSString *key = [WGGGroupStore keyForConversation:conv];
+            if (key.length == 0) continue;
+            for (NSString *g in [self groupsForChatKey:key]) {
+                if (![buckets[g]]) {
+                    buckets[g] = [NSMutableArray array];
+                    [customOrder addObject:g];
+                }
+                [buckets[g] addObject:@(i)];
+            }
+        }
+    }
+
+    NSMutableArray *out = [NSMutableArray array];
+    for (NSString *n in WGGAutoGroupNames()) {
+        [out addObject:[self sectionWithName:n
+                                    collapsed:[self isCollapsedGroup:n]
+                                      indices:buckets[n]]];
+    }
+    // 自定义分组只在有成员时显示（避免一排空分组刷屏）
+    for (NSString *g in customOrder) {
+        [out addObject:[self sectionWithName:g
+                                    collapsed:[self isCollapsedGroup:g]
+                                      indices:buckets[g]]];
+    }
+    return out;
 }
 
 #pragma mark - 设置项

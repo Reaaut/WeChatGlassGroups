@@ -12,6 +12,7 @@
 
 #import "SettingsController.h"
 #import "GroupStore.h"
+#import "Logger.h"
 
 NSArray<NSString *> *WGGArrowSymbolChoices(void) {
     static NSArray *choices;
@@ -68,6 +69,8 @@ typedef NS_ENUM(NSInteger, WGGSettingTag) {
 - (void)arrowRowTapped:(UIControl *)sender;
 - (void)addGroupTapped:(UIButton *)sender;
 - (void)deleteGroupTapped:(UIButton *)sender;
+- (void)copyLogTapped:(UIButton *)sender;
+- (void)clearLogTapped:(UIButton *)sender;
 - (void)addHintRow:(NSString *)text;
 @end
 
@@ -220,6 +223,40 @@ typedef NS_ENUM(NSInteger, WGGSettingTag) {
             [self addGroupRow:mine[i] index:i];
         }
     }
+
+    // ── 日志 ──────────────────────────────────────────────
+    // 用户不用折腾 syslog：点「复制日志」→ 剪贴板里就是全部日志，直接粘贴发出去
+    [self addSectionHeader:@"日志"];
+    UIView *cLog = [self addCard:48];
+    UIStackView *sLog = [self makeHStack];
+    [cLog addSubview:sLog];
+    [self pin:sLog toCard:cLog];
+
+    UIButton *copyBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    copyBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [copyBtn setTitle:@"复制日志" forState:UIControlStateNormal];
+    copyBtn.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
+    copyBtn.layer.cornerRadius = 10.0;
+    copyBtn.backgroundColor = [UIColor systemBlueColor];
+    [copyBtn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    [copyBtn addTarget:self action:@selector(copyLogTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [copyBtn.widthAnchor constraintEqualToConstant:110].active = YES;
+    [copyBtn.heightAnchor constraintEqualToConstant:34].active = YES;
+    [sLog addArrangedSubview:copyBtn];
+
+    UIButton *clearBtn = [UIButton buttonWithType:UIButtonTypeSystem];
+    clearBtn.translatesAutoresizingMaskIntoConstraints = NO;
+    [clearBtn setTitle:@"清空日志" forState:UIControlStateNormal];
+    clearBtn.titleLabel.font = [UIFont systemFontOfSize:15];
+    clearBtn.layer.cornerRadius = 10.0;
+    clearBtn.backgroundColor = [UIColor colorWithWhite:0.90 alpha:1.0];
+    [clearBtn setTitleColor:[UIColor labelColor] forState:UIControlStateNormal];
+    [clearBtn addTarget:self action:@selector(clearLogTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [clearBtn.widthAnchor constraintEqualToConstant:90].active = YES;
+    [clearBtn.heightAnchor constraintEqualToConstant:34].active = YES;
+    [sLog addArrangedSubview:clearBtn];
+
+    [self addHintRow:@"点「复制日志」后，直接在本页粘贴发给开发者即可（含会话探测结果）。"];
 
     // ── 其他 ──────────────────────────────────────────────
     [self addSectionHeader:@"其他"];
@@ -479,6 +516,23 @@ typedef NS_ENUM(NSInteger, WGGSettingTag) {
     if (i < 0 || (NSUInteger)i >= mine.count) return;
     [store removeGroupNamed:mine[(NSUInteger)i]];
     [self rebuildContent];
+}
+
+#pragma mark 日志按钮
+
+- (void)copyLogTapped:(UIButton *)sender {
+    NSString *content = WGGFileLogContents();
+    if (content.length == 0) {
+        content = @"（日志文件为空：先去微信首页逛一圈再回来复制）";
+    }
+    [UIPasteboard generalPasteboard].string = content;
+    [sender setTitle:@"已复制 ✓" forState:UIControlStateNormal];
+    [sender setTitle:@"复制日志" forState:UIControlStateHighlighted];
+}
+
+- (void)clearLogTapped:(UIButton *)sender {
+    WGGFileLogClear();
+    [sender setTitle:@"已清空 ✓" forState:UIControlStateNormal];
 }
 
 #pragma mark 生命周期

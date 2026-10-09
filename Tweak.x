@@ -423,7 +423,7 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 %end
 
 // ===========================================================================
-// MARK: - 阶段二骨架（拿到真实类名后再启用）
+// MARK: - 阶段二骨架：QQ 好友分组样式（拿到真实类名后再启用）
 // ===========================================================================
 //
 // ⚠️⚠️ 这一段必须保持 // 注释状态，不能用 #if 包！⚠️⚠️
@@ -431,21 +431,27 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 //   但方法体被剔除了 → 链接报 "function ... has internal linkage but is not defined"。
 //   这个坑已经踩过一次了。
 //
-// 启用步骤：
-//   1. 阶段一跑起来，从 syslog 里拿到真实的类名和属性名
-//   2. 把下面整段的 // 去掉，并换成真名
-//   3. 先只开 getter 观察日志（确认拿得到数组），再开过滤
+// 【需求】不要悬浮窗。把首页聊天列表直接改成 QQ 好友分组那种：
+//         好友 (12) ▾ / 群聊 (3) ▸ / 公众号 (2) ▸ —— 点表头折叠/展开。
 //
-// // 需要真机确认的两个名字：
-// static NSString * const kWGGConversationClass     = @"MMConversationListViewController";
-// static NSString * const kWGGConversationArrayName = @"conversationArray";
+// 【实现思路】在微信的会话表里"插行"（QQ 式分组的经典做法）：
+//   1. 用 sectionsForConversations: 把原始会话数组切成若干段
+//   2. 构建"虚拟行表"virtualRows：
+//        [表头(好友)] + 好友的行(若展开) + [表头(群聊)] + 群聊的行(若展开) + ...
+//   3. numberOfRows = virtualRows.count（numberOfSections 不动！微信多半只有 1 段）
+//   4. cellForRow：virtualRows[row] 是表头 → 返回我们自己的玻璃表头 cell；
+//      是会话 → 用 indices 把行号映射回原始数组，再 %orig 交给微信原生实现
+//   5. 点表头 → toggleCollapsedForGroup: → [table reloadData]
+//   ⚠️ numberOfSections / didSelectRowAtIndexPath / 行高 全都不动，
+//      插入的表头行也走微信的行高，样式用玻璃圆角浮条区分。
 //
-// // 最近一次读到的原始会话数组（只读快照，绝不修改）
-// static NSArray *gWGGRememberedConversations = nil;
+// // 真机日志确认后填这三个真名：
+// static NSString * const kWGGDataSourceClass   = @"（日志里 dataSource= 后面的类名）";
+// static NSString * const kWGGConversationArray = @"（日志里 会话数组属性名 = 后面的名字）";
 //
-// %hook MMConversationListViewController
+// %hook （真实数据源类名）
 //
-// // 1) 记录原始数组，原样返回（绝不在 getter 里改数组）
+// // 1) 记录原始数组（只读快照，绝不修改微信的数组）
 // - (NSArray *)conversationArray {
 //     NSArray *raw = %orig;
 //     [gWGGRememberedConversations release];
@@ -453,28 +459,28 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 //     return raw;
 // }
 //
-// // 2) 行数：必须和 cellForRow 用同一份映射，否则越界崩溃
+// // 2) 行数 = 表头数 + 展开分组的会话数
 // - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
-//     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
-//     if (r.active) return (NSInteger)r.filtered.count;
-//     return %orig;
+//     NSArray<WGGSection *> *secs = [[WGGGroupStore shared] sectionsForConversations:gWGGRememberedConversations];
+//     NSInteger rows = (NSInteger)secs.count;               // 每段一行表头
+//     for (WGGSection *s in secs) if (!s.collapsed) rows += (NSInteger)s.count;
+//     return rows;
 // }
 //
-// // 3) cell：把"过滤后的行号"翻译回原始行号，再交给微信原生实现
+// // 3) cell：表头行自己画；会话行映射回原始下标后 %orig
 // - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-//     WGGFilterResult *r = [[WGGGroupStore shared] filterConversations:gWGGRememberedConversations];
-//     if (r.active && indexPath.row < (NSInteger)r.indices.count) {
-//         NSInteger original = r.indices[(NSUInteger)indexPath.row].integerValue;
-//         NSIndexPath *mapped = [NSIndexPath indexPathForRow:original inSection:indexPath.section];
-//         return %orig(tv, mapped);
+//     WGGVirtualRow *v = WGGVirtualRowAt(indexPath.row);    // 由 sectionsForConversations 构建
+//     if (v.kind == WGGRowKindHeader) {
+//         return [WGGSectionHeaderCell cellForTable:tv section:v.section];  // 玻璃表头
 //     }
-//     return %orig;
+//     NSIndexPath *mapped = [NSIndexPath indexPathForRow:v.originalIndex inSection:indexPath.section];
+//     return %orig(tv, mapped);
 // }
 //
 // %end
 //
 // 注意：这三个方法要钩在"真正给首页 table 供数的那个类"上。
-//       用阶段一的 WGGDumpViewTree 日志看 table 的 dataSource 是谁 —— 很可能不是控制器本身。
+//       日志里「会话探测：table=... dataSource=...」会直接给出答案。
 
 // ===========================================================================
 // MARK: - 入口

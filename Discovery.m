@@ -5,12 +5,15 @@
 
 #import "Discovery.h"
 #import "GroupStore.h"   // 会话自动归类要用到 autoKindForConversation:
+#import "Logger.h"       // 日志落文件（用户设置页「复制日志」就能提交，不用折腾 syslog）
 #import <objc/runtime.h>
 #import <objc/message.h>
 
 // 日志入口：无论是否开启 DISCOVERY 都存在，所以 .m / Tweak.x 都可以直接用。
+// 同时写两处：NSLog（syslog，给接了电脑的人）+ 文件（给手机上直接复制的人）。
 void WGGLogMessage(NSString *msg) {
     NSLog(@"[WGG] %@", msg);
+    WGGFileLogAppend(msg);
 }
 
 #define WGGLog(fmt, ...) WGGLogMessage([NSString stringWithFormat:(fmt), ##__VA_ARGS__])
