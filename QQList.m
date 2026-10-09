@@ -14,6 +14,23 @@
 #import <QuartzCore/QuartzCore.h>   // kCACornerCurveContinuous
 #import <objc/message.h>
 
+// ============================ 自绘会话 cell 声明 ============================
+//（实现放在文件后部；声明必须提前，否则 WGGQQList 里引用会编译不过）
+
+static NSString *const kWGGConversationReuseID = @"WGGConversationCell";
+
+/// 自绘会话行：玻璃胶囊 + 圆形首字头像 + 名字/最后消息/时间/未读红点。
+@interface WGGConversationCell : UITableViewCell {
+    UIView *_capsule;
+    UILabel *_avatar;
+    UILabel *_nameLabel;
+    UILabel *_msgLabel;
+    UILabel *_timeLabel;
+    UILabel *_badgeLabel;
+}
+- (void)configureWithConversation:(id)conversation;
+@end
+
 // ============================ 虚拟行模型 ============================
 
 @interface WGGVirtualRow ()
@@ -353,20 +370,6 @@ static NSTimeInterval gLastToggleTime = 0.0;
 //
 // 数据读取：ivar 优先、respondsToSelector 兜底，永不触发 KVC（血泪教训）。
 // 读不到就显示占位，绝不崩溃。
-
-static NSString *const kWGGConversationReuseID = @"WGGConversationCell";
-
-/// 自绘会话行：玻璃胶囊 + 圆形首字头像 + 名字/最后消息/时间/未读红点。
-@interface WGGConversationCell : UITableViewCell {
-    UIView *_capsule;
-    UILabel *_avatar;
-    UILabel *_nameLabel;
-    UILabel *_msgLabel;
-    UILabel *_timeLabel;
-    UILabel *_badgeLabel;
-}
-- (void)configureWithConversation:(id)conversation;
-@end
 
 static NSString *WGGReadStr(id obj, NSArray<NSString *> *keys) {
     if (!obj) return nil;
