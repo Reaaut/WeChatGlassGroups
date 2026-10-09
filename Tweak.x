@@ -50,6 +50,7 @@ static void WGGInstallDrawerIfNeeded(UIViewController *vc);
 static void WGGApplyStoreConfigToPanel(GlassGroupPanel *panel);
 static void WGGProbeOnceIfPossible(UIViewController *vc);
 static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc);
+static void WGGAttachFloatingEntry(UIViewController *vc);
 static void WGGPushSettingsFrom(id vcObj);
 static UIView *WGGMakeSettingsEntryRow(void);
 
@@ -308,6 +309,11 @@ static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc) {
     if (!WGGVersionSupported()) return;
     if (!WGGLooksLikeSettingsController(vc)) return;
 
+    // 【兜底入口先行】浮动玻璃胶囊直接挂 vc.view——微信设置页的表格
+    // 会吃掉 footer 区域的触摸（胶囊看得见点不动，日志里连"被点击"都没有），
+    // 而 vc.view 自己的触摸必达，弹出链路和首页 ⚙ 行完全一致（已验证可靠）。
+    WGGAttachFloatingEntry(vc);
+
     // 先在自己 view 里找（常规情况）；找不到再扫整个 window ——
     // 日志显示 MoreViewController 出现但入口没注入，说明它的表格可能
     // 不在 vc.view 的子树里（微信 8.0.78 有独立的 hosting window）。
@@ -333,6 +339,78 @@ static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc) {
 
     WGGLogMessage([NSString stringWithFormat:@"设置入口已注入：vc=%@ table=%@",
                    NSStringFromClass([vc class]), NSStringFromClass([table class])]);
+}
+
+/// 微信设置页兜底入口：浮动玻璃胶囊直接挂 vc.view（不进表格）。
+/// 同款玻璃配方：UltraThinMaterialLight + white 0.34 tint + radius 14 continuous
+/// + border 0.5 white 0.5。挂在底部（避开导航栏/内容），autoresizing 随布局。
+static void WGGAttachFloatingEntry(UIViewController *vc) {
+    static char kWGGFloatingEntryKey;
+    if (objc_getAssociatedObject(vc, &kWGGFloatingEntryKey)) return;
+
+    CGFloat w = vc.view.bounds.size.width;
+    if (w < 100) w = [UIScreen mainScreen].bounds.size.width;
+    UIControl *btn = [[[UIControl alloc] initWithFrame:
+                       CGRectMake(16, vc.view.bounds.size.height - 84, w - 32, 52)] autorelease];
+    btn.layer.cornerRadius = 14.0;
+    btn.layer.cornerCurve = kCACornerCurveContinuous;
+    btn.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc]
+                                initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
+    blur.frame = btn.bounds;
+    blur.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    blur.layer.cornerRadius = 14.0;
+    blur.layer.cornerCurve = kCACornerCurveContinuous;
+    blur.clipsToBounds = YES;
+    blur.layer.borderWidth = 0.5;
+    blur.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
+    blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+    blur.userInteractionEnabled = NO;   // 触摸全给 btn
+    [btn addSubview:blur];
+    [blur release];
+
+    UIImageView *icon = [[[UIImageView alloc] init] autorelease];
+    if (@available(iOS 13.0, *)) {
+        icon.image = [UIImage systemImageNamed:@"rectangle.stack"];
+    }
+    icon.tintColor = [UIColor systemBlueColor];
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    icon.frame = CGRectMake(18, 14, 24, 24);
+    icon.autoresizingMask = UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleTopMargin;
+    [blur.contentView addSubview:icon];
+
+    UILabel *title = [[[UILabel alloc] init] autorelease];
+    title.text = @"会话分组（液态玻璃）";
+    title.font = [UIFont systemFontOfSize:16];
+    title.textColor = [UIColor labelColor];
+    title.frame = CGRectMake(52, 0, btn.bounds.size.width - 52 - 40, 52);
+    title.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [blur.contentView addSubview:title];
+
+    UIImageView *chevron = [[[UIImageView alloc] init] autorelease];
+    if (@available(iOS 13.0, *)) {
+        chevron.image = [UIImage systemImageNamed:@"chevron.right"];
+    }
+    chevron.tintColor = [UIColor secondaryLabelColor];
+    chevron.contentMode = UIViewContentModeScaleAspectFit;
+    chevron.frame = CGRectMake(btn.bounds.size.width - 34, 17, 14, 18);
+    chevron.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleBottomMargin | UIViewAutoresizingFlexibleTopMargin;
+    [blur.contentView addSubview:chevron];
+
+    [btn addTarget:[WGGSettingsEntryHandler sharedHandler]
+            action:@selector(entryTapped:)
+  forControlEvents:UIControlEventTouchUpInside];
+    UITapGestureRecognizer *gr = [[UITapGestureRecognizer alloc]
+                                  initWithTarget:[WGGSettingsEntryHandler sharedHandler]
+                                  action:@selector(entryTapped:)];
+    [btn addGestureRecognizer:gr];
+    [gr release];
+
+    [vc.view addSubview:btn];
+    [vc.view bringSubviewToFront:btn];
+    objc_setAssociatedObject(vc, &kWGGFloatingEntryKey, btn, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    WGGLogMessage(@"设置页：浮动玻璃入口已挂到 vc.view");
 }
 
 /// 造一行"液态玻璃胶囊"样式的设置入口（图标 + 标题 + 箭头），点它进插件设置页。
@@ -815,7 +893,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.3.7 loaded（移除危险枚举 + 对账行 + 结构转储）");
+        WGGLogMessage(@"WeChatGlassGroups v0.3.8 loaded（全量收编·类型编码验证 + 浮动设置入口）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
