@@ -31,7 +31,6 @@
 static const CGFloat kDrawerDefaultWidth = 268.0;
 static const CGFloat kDrawerEdgeInset    = 8.0;   // 抽屉离屏幕左边/上下的距离（留出投影空间）
 static const CGFloat kDrawerRadius       = 28.0;  // 大圆角 = 液态玻璃感
-static const CGFloat kContentInset       = 16.0;
 static const CGFloat kRowHeight          = 48.0;
 static const CGFloat kRowSpacing         = 8.0;
 static const CGFloat kRowRadius          = 16.0;

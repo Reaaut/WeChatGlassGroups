@@ -244,7 +244,9 @@ void WGGProbeConversations(void) {
             NSString *key  = [WGGGroupStore keyForConversation:conv];
             NSString *nick = [WGGGroupStore displayNameForConversation:conv];
             WGGAutoKind kind = [WGGGroupStore autoKindForConversation:conv];
-            WGGLog(@"   [%2lu] class=%-28@ key=%-32@ nick=%-14@ → %@",
+            // ⚠️ 格式串不要给 %@ 加宽度（%-28@ 这类）—— clang 的 -Wformat 可能判非法，
+            //    本工程 -Werror，一警告就直接挂。想对齐就用普通空格拼接。
+            WGGLog(@"   [%2lu] class=%@ key=%@ nick=%@ → %@",
                    (unsigned long)i,
                    NSStringFromClass([conv class]),
                    key  ? key  : @"(取不到)",
