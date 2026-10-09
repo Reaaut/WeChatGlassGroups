@@ -529,7 +529,8 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
 /// 直接构造微信聊天页（社区多年验证的稳定方案）：
 /// alloc BaseMsgContentViewController → 塞 m_nsUsrName / m_nsNickName → push。
 /// 优先用 setter（正确 retain）；没有 setter 才 object_setIvar + retain（MRC 手动接管）。
-static void WGGOpenChatDirect(UIViewController *fromVC, NSString *username, NSString *nick) {
+/// 注意 fromVC 用 id：%hook 里 self 是"无头文件"的类，编译器不认为它是 UIViewController。
+static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
     Class chatCls = NSClassFromString(@"BaseMsgContentViewController");
     if (!chatCls || username.length == 0) return;
     id chat = [[chatCls alloc] init];   // +1
