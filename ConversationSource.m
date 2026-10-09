@@ -136,18 +136,15 @@ static void WGGCollectArrayCandidates(id obj, NSArray<NSString *> *prefix,
     }
 }
 
-#pragma mark - 全量会话（类型编码验证过的安全枚举）
+#pragma mark - 全量会话（双方案：filtered 列表 / 索引路径构造）
 
-// 【0.3.8 方案】0.3.7 对账实锤：原生表格 ~695 行 vs front 数组 15 条——
-// 全量数据在逻辑层的 filtered 会话列表里（getFilteredSessionCount /
-// getFilteredSessionInfo:）。安全铁律（0.3.6 闪退的教训）：
-//   ① 只碰"参数是整数索引"的方法——先用类型编码验证，对象参数一律不猜；
-//   ② hasLoadSessionData==YES 才动手；搜索态绝不动；
-//   ③ 整个枚举 @try 包住；首个会话用户名读不出 → 永久禁用（对账行兜底）；
-//   ④ 结果缓存，filtered 总数变了才重枚举。
+// 【0.3.8 实锤】filtered 方案被静默跳过（无任何日志）——filtered 大概率是
+// 搜索过滤列表，平时=0。0.3.9：每个跳过路径都打日志 + 新增方案 B
+// （索引路径构造枚举，带"黄金验证"：必须枚举出 front 已知的会话才放行）。
 static NSArray *gAllSessionsCache = nil;         // +1，MRC
-static unsigned long long gAllSessionCount = 0;  // 上次枚举时的 filtered 总数
+static unsigned long long gAllSessionCount = 0;  // 上次枚举数量
 static BOOL gAllSessionsDisabled = NO;           // 不安全 → 永久禁用
+static BOOL gSkipLogged = NO;                    // 跳过原因只打一次
 
 /// 判断方法是不是"整数索引"参数。真正的参数编码从 enc[3] 开始
 /// （enc[0]=返回值，enc[1]=self，enc[2]=cmd）。
@@ -161,7 +158,12 @@ static BOOL WGGMethodTakesIntegerArg(id target, SEL sel) {
             a == 'L' || a == 'l' || a == 'B' || a == 'C' || a == 'c');
 }
 
-/// 枚举 filtered 全列表。返回自动释放数组；任何不安全都返回 nil。
+static BOOL WGGIsIntEncoding(char c) {
+    return (c == 'Q' || c == 'q' || c == 'I' || c == 'i' ||
+            c == 'L' || c == 'l' || c == 'B' || c == 'C' || c == 'c');
+}
+
+/// 方案 A：枚举 filtered 全列表（参数必须是整数索引）。
 static NSArray *WGGEnumerateFilteredSessions(id logic) {
     @autoreleasepool {
         if (!logic || gAllSessionsDisabled) return nil;
@@ -169,8 +171,8 @@ static NSArray *WGGEnumerateFilteredSessions(id logic) {
         SEL selGet = NSSelectorFromString(@"getFilteredSessionInfo:");
         if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selGet]) return nil;
         if (!WGGMethodTakesIntegerArg(logic, selGet)) {
-            gAllSessionsDisabled = YES;   // 参数是对象 → 不猜（0.3.6 的教训）
-            WGGLogMessage(@"全量收编：getFilteredSessionInfo: 参数不是整数索引，停用（对账行兜底）");
+            gAllSessionsDisabled = YES;
+            WGGLogMessage(@"全量收编A：getFilteredSessionInfo: 参数不是整数索引，停用");
             return nil;
         }
 
@@ -186,7 +188,7 @@ static NSArray *WGGEnumerateFilteredSessions(id logic) {
                 if (s) [out addObject:s];
             }
         } @catch (NSException *e) {
-            WGGLogMessage([NSString stringWithFormat:@"全量收编：枚举异常（停用）：%@", e]);
+            WGGLogMessage([NSString stringWithFormat:@"全量收编A：枚举异常（停用）：%@", e]);
             gAllSessionsDisabled = YES;
             return nil;
         }
@@ -194,23 +196,145 @@ static NSArray *WGGEnumerateFilteredSessions(id logic) {
     }
 }
 
-/// 校验 + 合并：front 优先（展示字段最全），filtered 补缺（按用户名去重）。
-/// 用户名连续读不出 → 字段不适配，整体停用。
-static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
-    // 先校验前 3 个的键可读性
-    NSUInteger checkN = all.count < 3 ? all.count : 3;
-    NSUInteger readable = 0;
-    for (NSUInteger i = 0; i < checkN; i++) {
-        if ([WGGGroupStore keyForConversation:all[i]].length > 0) readable++;
+/// 在类里找"两个整数参数的 init"，名字要同时含 Section（或 Part）和 Row。
+/// 找不到返回 NULL。纯只读扫描，零风险。
+static SEL WGGFindTwoIntInit(Class c) {
+    unsigned int n = 0;
+    Method *ms = class_copyMethodList(c, &n);
+    SEL found = NULL;
+    for (unsigned int i = 0; i < n && !found; i++) {
+        SEL s = method_getName(ms[i]);
+        const char *cn = sel_getName(s);
+        if (!cn) continue;
+        NSString *name = [NSString stringWithUTF8String:cn];
+        if (![name hasPrefix:@"initWith"]) continue;
+        const char *enc = method_getTypeEncoding(ms[i]);
+        if (!enc || strlen(enc) < 5) continue;
+        if (!WGGIsIntEncoding(enc[3]) || !WGGIsIntEncoding(enc[4])) continue;
+        BOOL hasSection = [name rangeOfString:@"ection"].location != NSNotFound ||
+                          [name rangeOfString:@"art"].location != NSNotFound;   // Part
+        BOOL hasRow = [name rangeOfString:@"ow" options:NSCaseInsensitiveSearch].location != NSNotFound;
+        if (hasSection && hasRow) found = s;
     }
-    if (readable == 0) {
-        gAllSessionsDisabled = YES;
-        WGGLogMessage([NSString stringWithFormat:
-                       @"全量收编：会话对象读不出用户名（类=%@），停用——待字段适配",
-                       all.count ? NSStringFromClass([all[0] class]) : @"?"]);
-        return front;
-    }
+    free(ms);
+    return found;
+}
 
+/// 方案 B：索引路径构造枚举。
+/// firstSessionIndexPath 拿微信自己的索引对象（0.3.6 实锤绝不能传
+/// NSIndexPath——必须用它自己的类构造），扫它的 init 找构造方法，
+/// 构造 (row, section) 或 (section, row) 两种顺序都试，
+/// 【黄金验证】：枚举结果必须包含真索引换出的那个用户名，否则整体停用。
+static NSArray *WGGEnumerateViaIndexPath(id vc, id logic) {
+    @autoreleasepool {
+        if (!vc || !logic || gAllSessionsDisabled) return nil;
+        SEL selFirst = NSSelectorFromString(@"firstSessionIndexPath");
+        SEL selGet   = NSSelectorFromString(@"logicGetSessionAtIndexPath:");
+        SEL selCnt   = NSSelectorFromString(@"getSessionCountForSection:");
+        SEL selIP    = NSSelectorFromString(@"indexPathOfSessionUserName:");
+        if (![vc respondsToSelector:selFirst] || ![vc respondsToSelector:selGet] ||
+            ![vc respondsToSelector:selIP] || ![logic respondsToSelector:selCnt]) {
+            if (!gSkipLogged) {
+                gSkipLogged = YES;
+                WGGLogMessage(@"全量收编B：缺方法（first/logicGet/ipOf/count），停用");
+            }
+            return nil;
+        }
+        if (!WGGMethodTakesIntegerArg(logic, selCnt)) {
+            gAllSessionsDisabled = YES;
+            WGGLogMessage(@"全量收编B：getSessionCountForSection: 参数不是整数，停用");
+            return nil;
+        }
+
+        @try {
+            id realIP = ((id (*)(id, SEL))objc_msgSend)(vc, selFirst);
+            if (!realIP) {
+                if (!gSkipLogged) {
+                    gSkipLogged = YES;
+                    WGGLogMessage(@"全量收编B：firstSessionIndexPath 返回空，停用");
+                }
+                return nil;
+            }
+            Class ipCls = [realIP class];
+
+            // ① 微信自己的索引必须换得出会话（黄金会话）
+            id sess0 = ((id (*)(id, SEL, id))objc_msgSend)(vc, selGet, realIP);
+            NSString *goldenKey = [WGGGroupStore keyForConversation:sess0];
+            if (!goldenKey) {
+                gAllSessionsDisabled = YES;
+                WGGLogMessage([NSString stringWithFormat:
+                               @"全量收编B：真索引换会话读不出用户名（%@），停用",
+                               NSStringFromClass([sess0 class])]);
+                return nil;
+            }
+
+            // ② 构造方法
+            SEL ctor = WGGFindTwoIntInit(ipCls);
+            if (!ctor) {
+                gAllSessionsDisabled = YES;
+                WGGLogMessage([NSString stringWithFormat:
+                               @"全量收编B：索引类 %@ 无两整数参数的 init，停用",
+                               NSStringFromClass(ipCls)]);
+                return nil;
+            }
+
+            // ③ 两种参数顺序都试（row,section / section,row）
+            for (int order = 0; order < 2; order++) {
+                NSMutableArray *out = [NSMutableArray array];
+                NSMutableSet *keys = [[NSMutableSet alloc] init];
+                @try {
+                    int emptyStreak = 0;
+                    for (NSUInteger s = 0; s < 16; s++) {
+                        NSInteger rows = ((NSInteger (*)(id, SEL, NSUInteger))objc_msgSend)(logic, selCnt, s);
+                        if (rows <= 0) { if (++emptyStreak >= 3) break; continue; }
+                        emptyStreak = 0;
+                        if (rows > 500) rows = 500;
+                        for (NSUInteger r = 0; r < (NSUInteger)rows; r++) {
+                            long a = order == 0 ? (long)r : (long)s;
+                            long b = order == 0 ? (long)s : (long)r;
+                            id ip = ((id (*)(id, SEL, long, long))objc_msgSend)([ipCls alloc], ctor, a, b);
+                            if (!ip) continue;
+                            id sess = ((id (*)(id, SEL, id))objc_msgSend)(vc, selGet, ip);
+                            [ip release];
+                            if (sess) {
+                                [out addObject:sess];
+                                NSString *k = [WGGGroupStore keyForConversation:sess];
+                                if (k) [keys addObject:k];
+                            }
+                        }
+                    }
+                } @catch (NSException *e) {
+                    WGGLogMessage([NSString stringWithFormat:
+                                   @"全量收编B：顺序%d 枚举异常：%@", order, e]);
+                    [keys release];
+                    continue;   // 换一种顺序再试
+                }
+
+                // 【黄金验证】必须包含真索引换出的那个用户名
+                if (out.count >= 5 && [keys containsObject:goldenKey]) {
+                    WGGLogMessage([NSString stringWithFormat:
+                                   @"全量收编B：构造顺序=%@ 枚举=%lu 含黄金会话✓",
+                                   order == 0 ? @"(row,section)" : @"(section,row)",
+                                   (unsigned long)out.count]);
+                    [keys release];
+                    return out;
+                }
+                [keys release];
+            }
+
+            gAllSessionsDisabled = YES;
+            WGGLogMessage(@"全量收编B：两种构造顺序都验证失败，停用（对账行兜底）");
+            return nil;
+        } @catch (NSException *e) {
+            WGGLogMessage([NSString stringWithFormat:@"全量收编B：异常（停用）：%@", e]);
+            gAllSessionsDisabled = YES;
+            return nil;
+        }
+    }
+}
+
+/// 校验 + 合并：front 优先（展示字段最全），其余补缺（按用户名去重）。
+static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
     NSMutableSet *seen = [[NSMutableSet alloc] init];
     NSMutableArray *merged = [NSMutableArray array];
     for (id c in front) {
@@ -232,7 +356,7 @@ static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
     if (!gLoggedOnce) {
         gLoggedOnce = YES;
         WGGLogMessage([NSString stringWithFormat:
-                       @"全量收编：front=%lu + filtered 补=%lu → 共 %lu（原生总行数对账见对账行）",
+                       @"全量收编：front=%lu + 补=%lu → 共 %lu",
                        (unsigned long)front.count, added, (unsigned long)merged.count]);
     }
     return merged;
@@ -278,21 +402,36 @@ static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
         gOwnerClassName = [[NSString alloc] initWithString:NSStringFromClass([vc class])];
     }
 
-    // 4) 全量收编：逻辑层 filtered 列表 ≈ 原生表格全部行（0.3.7 对账：
-    //    原生 ~695 vs front 15）。四重安全门（见上方说明）。
+    // 4) 全量收编：方案 A（filtered，0.3.8 疑似搜索过滤=0 且静默跳过）
+    //    → 方案 B（索引路径构造 + 黄金验证）。每个跳过路径都打日志。
     if (!gAllSessionsDisabled && ![self isSearchingViewController:vc]) {
         Ivar lv = class_getInstanceVariable([vc class], "m_mainFrameLogicController");
         id logic = lv ? object_getIvar(vc, lv) : nil;
-        if (logic) {
+        if (!logic) {
+            if (!gSkipLogged) {
+                gSkipLogged = YES;
+                WGGLogMessage(@"全量收编：m_mainFrameLogicController 为空，停用");
+            }
+        } else {
             SEL selReady = NSSelectorFromString(@"hasLoadSessionData");
             BOOL ready = YES;
             if ([logic respondsToSelector:selReady]) {
                 ready = ((BOOL (*)(id, SEL))objc_msgSend)(logic, selReady);
+                if (!ready && !gSkipLogged) {
+                    gSkipLogged = YES;
+                    WGGLogMessage(@"全量收编：hasLoadSessionData=NO（数据未就绪）");
+                }
             }
             if (ready) {
+                // 方案 A：filtered 列表
                 SEL selCnt = NSSelectorFromString(@"getFilteredSessionCount");
                 if ([logic respondsToSelector:selCnt]) {
                     unsigned long long n = ((unsigned long long (*)(id, SEL))objc_msgSend)(logic, selCnt);
+                    if (!gSkipLogged) {
+                        gSkipLogged = YES;
+                        WGGLogMessage([NSString stringWithFormat:
+                                       @"全量收编A：getFilteredSessionCount=%llu", n]);
+                    }
                     if (n > 0 && n <= 5000 && (n != gAllSessionCount || !gAllSessionsCache)) {
                         NSArray *fresh = WGGEnumerateFilteredSessions(logic);
                         if (fresh.count > 0) {
@@ -300,6 +439,15 @@ static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
                             gAllSessionsCache = [fresh retain];
                             gAllSessionCount = n;
                         }
+                    }
+                }
+                // 方案 B：索引路径构造（A 没结果才走）
+                if (!gAllSessionsCache) {
+                    NSArray *fresh = WGGEnumerateViaIndexPath(vc, logic);
+                    if (fresh.count > 0) {
+                        [gAllSessionsCache release];
+                        gAllSessionsCache = [fresh retain];
+                        gAllSessionCount = fresh.count;
                     }
                 }
             }

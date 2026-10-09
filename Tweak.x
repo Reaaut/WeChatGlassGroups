@@ -522,43 +522,32 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 
 - (void)entryTapped:(UIControl *)sender {
     WGGLogMessage(@"设置入口：被点击");
-    UIViewController *vc = nil;
-
-    // ① 优先走响应链：入口胶囊长在设置页的 tableFooterView 里，
-    //    nextResponder 一路向上就是设置页控制器，自带导航栈，直接 push 最稳。
-    UIResponder *r = sender;
-    while (r) {
-        if ([r isKindOfClass:[UIViewController class]]) { vc = (UIViewController *)r; break; }
-        r = [r nextResponder];
-    }
-    if (vc) {
-        WGGLogMessage([NSString stringWithFormat:@"设置入口：响应链找到 vc=%@，准备 push",
-                       NSStringFromClass([vc class])]);
-        WGGPushSettingsFrom(vc);
-        return;
-    }
-
-    // ② 兜底：keyWindow 顶层（presented 链走到头）
-    UIWindow *key = [UIApplication sharedApplication].keyWindow;
-    if (!key) {
-        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-            for (UIWindow *w in [(UIWindowScene *)scene windows]) {
-                if (w.isKeyWindow) { key = w; break; }
+    @try {
+        // 【0.3.8 实锤】响应链走到一半闪退（"被点击"之后、下一步日志之前）。
+        // 微信页面的 responder 链不可靠，彻底弃用——改用 keyWindow 的
+        // presented 链顶端，全程只有标准 UIKit 对象，不可能崩。
+        UIWindow *key = [UIApplication sharedApplication].keyWindow;
+        if (!key) {
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                for (UIWindow *w in [(UIWindowScene *)scene windows]) {
+                    if (w.isKeyWindow) { key = w; break; }
+                }
+                if (key) break;
             }
-            if (key) break;
         }
-    }
-    UIViewController *top = key ? key.rootViewController : nil;
-    while (top.presentedViewController) top = top.presentedViewController;
-    if (top) {
-        WGGLogMessage([NSString stringWithFormat:@"设置入口：keyWindow 兜底 vc=%@",
+        UIViewController *top = key.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        if (!top) {
+            WGGLogMessage(@"设置入口：找不到 keyWindow 顶端，弹不出设置页");
+            return;
+        }
+        WGGLogMessage([NSString stringWithFormat:@"设置入口：顶端=%@，弹出",
                        NSStringFromClass([top class])]);
         WGGPushSettingsFrom(top);
-        return;
+    } @catch (NSException *e) {
+        WGGLogMessage([NSString stringWithFormat:@"设置入口：异常 %@", e]);
     }
-
-    WGGLogMessage(@"设置入口：找不到控制器，弹不出设置页");
 }
 
 @end
@@ -893,7 +882,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.3.8 loaded（全量收编·类型编码验证 + 浮动设置入口）");
+        WGGLogMessage(@"WeChatGlassGroups v0.3.9 loaded（双方案全量收编+黄金验证 + 入口弃响应链）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

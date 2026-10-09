@@ -92,12 +92,18 @@ void WGGFileLogAppend(NSString *line) {
     unsigned long long size = attr ? [attr fileSize] : 0;
 
     if (size > (unsigned long long)kLogTrimThreshold) {
-        // 截断：只留最后 kLogKeepBytes，避免文件无限膨胀
-        NSString *all = [NSString stringWithContentsOfFile:gLogPath
-                                              encoding:NSUTF8StringEncoding error:NULL];
-        if (all.length > (NSUInteger)kLogKeepBytes) {
-            NSString *tail = [all substringFromIndex:all.length - (NSUInteger)kLogKeepBytes];
-            [tail writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        // 截断：只留最后 kLogKeepBytes，避免文件无限膨胀。
+        // ⚠️ 整段 @try：日志只是辅助，绝不能因为裁剪出事把微信带崩
+        // （0.3.8 闪退疑点：文件恰好在阈值附近，裁剪路径可疑）。
+        @try {
+            NSString *all = [NSString stringWithContentsOfFile:gLogPath
+                                                    encoding:NSUTF8StringEncoding error:NULL];
+            if (all.length > (NSUInteger)kLogKeepBytes) {
+                NSString *tail = [all substringFromIndex:all.length - (NSUInteger)kLogKeepBytes];
+                [tail writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+            }
+        } @catch (NSException *e) {
+            // 裁剪失败就算了，继续追加（大文件无害）
         }
     }
 
