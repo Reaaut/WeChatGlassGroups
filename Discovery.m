@@ -4,6 +4,7 @@
 //
 
 #import "Discovery.h"
+#import "GroupStore.h"   // 会话自动归类要用到 autoKindForConversation:
 #import <objc/runtime.h>
 #import <objc/message.h>
 
@@ -157,6 +158,117 @@ void WGGSearchClasses(NSString *keyword, NSUInteger limit) {
     free(classes);
 }
 
+// ---------- 会话数组 / 自动归类 探测 ----------
+//
+// 这是阶段一最有价值的一段：它把"会话数组到底叫什么属性名"和
+// "每个会话会被归到好友还是群聊"直接在真机上打出来。
+// 有了它，阶段二就不需要猜任何属性名了。
+
+/// 在所有 window 里找面积最大的 UITableView（= 首页会话列表）。
+static UITableView *WGGFindLargestTableView(void) {
+    __block UITableView *best = nil;
+    __block CGFloat bestArea = 0;
+
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *w in [(UIWindowScene *)scene windows]) {
+            __block void (^walk)(UIView *);
+            walk = ^(UIView *v) {
+                if ([v isKindOfClass:[UITableView class]]) {
+                    UITableView *tv = (UITableView *)v;
+                    CGRect r = [tv convertRect:tv.bounds toView:nil];
+                    CGFloat area = r.size.width * r.size.height;
+                    if (area > bestArea) { bestArea = area; best = tv; }
+                }
+                for (UIView *sub in v.subviews) walk(sub);
+            };
+            walk(w);
+        }
+    }
+    return best;
+}
+
+void WGGProbeConversations(void) {
+    @autoreleasepool {
+        UITableView *table = WGGFindLargestTableView();
+        if (!table) {
+            WGGLog(@"会话探测：没找到任何 UITableView");
+            return;
+        }
+
+        id ds = table.dataSource;
+        NSInteger rows = [table numberOfRowsInSection:0];
+        WGGLog(@"会话探测：table=%@ rows(s0)=%ld dataSource=%@",
+               NSStringFromClass([table class]), (long)rows,
+               ds ? NSStringFromClass([ds class]) : @"(nil)");
+        WGGLog(@"会话探测：table.delegate=%@",
+               table.delegate ? NSStringFromClass([table.delegate class]) : @"(nil)");
+        if (!ds) return;
+
+        // 挨个试候选属性名。命中哪个就把名字打出来 —— 阶段二直接用它。
+        NSArray<NSString *> *candidates = @[
+            @"conversationArray", @"m_arrConversation", @"arrConversation",
+            @"sessions", @"m_arrSession", @"m_arrSessions",
+            @"dataArray", @"m_arrData", @"items", @"listArray"
+        ];
+        NSArray *found = nil;
+        NSString *foundName = nil;
+        for (NSString *n in candidates) {
+            if (![ds respondsToSelector:NSSelectorFromString(n)]) continue;
+            @try {
+                id v = [ds valueForKey:n];
+                if ([v isKindOfClass:[NSArray class]] && [(NSArray *)v count] > 0) {
+                    found = (NSArray *)v;
+                    foundName = n;
+                    break;
+                }
+            } @catch (NSException *e) {
+                // 某些 key 会抛异常，忽略
+            }
+        }
+
+        if (!found) {
+            WGGLog(@"会话探测：⭐ 候选属性名全部没命中。");
+            WGGLog(@"          说明会话数组在别的类/别的名字上 —— 请把上面 dataSource 的类名报回来，");
+            WGGLog(@"          下一步用 WGGDumpClassInfo 去 dump 那个类。");
+            return;
+        }
+
+        WGGLog(@"会话探测：⭐ 会话数组属性名 = %@（共 %lu 条）—— 阶段二就用它",
+               foundName, (unsigned long)found.count);
+
+        // 逐条打印标识 + 自动归类结果，直接验证"好友/群聊"判断是否成立
+        NSUInteger limit = found.count < 15 ? found.count : 15;
+        for (NSUInteger i = 0; i < limit; i++) {
+            id conv = found[i];
+            NSString *key  = [WGGGroupStore keyForConversation:conv];
+            NSString *nick = [WGGGroupStore displayNameForConversation:conv];
+            WGGAutoKind kind = [WGGGroupStore autoKindForConversation:conv];
+            WGGLog(@"   [%2lu] class=%-28@ key=%-32@ nick=%-14@ → %@",
+                   (unsigned long)i,
+                   NSStringFromClass([conv class]),
+                   key  ? key  : @"(取不到)",
+                   nick ? nick : @"(取不到)",
+                   [WGGGroupStore nameForAutoKind:kind]);
+        }
+
+        // 统计一下归类分布，一眼看出比例对不对
+        NSUInteger friends = 0, groups = 0, official = 0, sys = 0, unknown = 0;
+        for (id conv in found) {
+            switch ([WGGGroupStore autoKindForConversation:conv]) {
+                case WGGAutoKindFriend:   friends++;  break;
+                case WGGAutoKindGroup:    groups++;   break;
+                case WGGAutoKindOfficial: official++; break;
+                case WGGAutoKindSystem:   sys++;      break;
+                default:                  unknown++;  break;
+            }
+        }
+        WGGLog(@"会话探测：归类分布 好友=%lu 群聊=%lu 公众号=%lu 系统=%lu 未知=%lu",
+               (unsigned long)friends, (unsigned long)groups,
+               (unsigned long)official, (unsigned long)sys, (unsigned long)unknown);
+    }
+}
+
 // ---------- 安装探测 ----------
 //
 // 注意：本文件是纯 Objective-C，不含 Logos 语法（%hook/%ctor）。
@@ -201,4 +313,5 @@ void WGGDiscoveryBootstrap(void) {}
 void WGGDumpViewTree(void) {}
 void WGGDumpClassInfo(NSString *className) { (void)className; }
 void WGGSearchClasses(NSString *keyword, NSUInteger limit) { (void)keyword; (void)limit; }
+void WGGProbeConversations(void) {}
 #endif

@@ -35,6 +35,14 @@ void WGGDumpClassInfo(NSString *className);
 /// 例：WGGSearchClasses(@"Conversation", 80); WGGSearchClasses(@"Session", 80);
 void WGGSearchClasses(NSString *keyword, NSUInteger limit);
 
+/// 【阶段一核心探测】找到首页会话列表的 table → 读它的 dataSource →
+/// 挨个试候选属性名，把"会话数组到底叫什么"打出来，
+/// 然后逐个打印每个会话的 标识 / 昵称 / **自动归类结果**。
+///
+/// 这一步的价值：直接在真机上验证"好友 / 群聊 自动判断"成不成立，
+/// 并且顺便拿到阶段二需要的真实属性名 —— 不用再猜。
+void WGGProbeConversations(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -41,7 +41,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WeChatGlassGroups
 
-WeChatGlassGroups_FILES = Tweak.x GlassGroupPanel.m GroupStore.m Discovery.m
+WeChatGlassGroups_FILES = Tweak.x GlassGroupPanel.m GroupStore.m SettingsController.m Discovery.m
 WeChatGlassGroups_CFLAGS = -I./include
 WeChatGlassGroups_FRAMEWORKS = UIKit Foundation QuartzCore
 

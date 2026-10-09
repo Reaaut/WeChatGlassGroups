@@ -30,6 +30,8 @@ extern NSString *const WGGGroupAllName;
 - (void)glassGroupPanel:(GlassGroupPanel *)panel didSelectGroup:(NSString *)groupName;
 /// 搜索框文字变化（空串表示清空）。
 - (void)glassGroupPanel:(GlassGroupPanel *)panel didChangeSearchText:(NSString *)text;
+/// 用户点了抽屉底部的「设置」行 → 应该推出 WGGSettingsController。
+- (void)glassGroupPanelDidRequestSettings:(GlassGroupPanel *)panel;
 @end
 
 #pragma mark - 抽屉面板本体
@@ -49,6 +51,10 @@ extern NSString *const WGGGroupAllName;
 @property (nonatomic, assign) CGFloat cornerRadius;
 /// 是否显示底部搜索框，默认 YES。
 @property (nonatomic, assign) BOOL searchEnabled;
+/// 分组行间距（pt），默认 8。设置页可调。
+@property (nonatomic, assign) CGFloat rowSpacing;
+/// 分组行箭头图标（SF Symbol 名），默认 @"chevron.right"。设置页可换。
+@property (nonatomic, copy, nullable) NSString *arrowSymbolName;
 
 /// delegate 用 assign：面板由父视图持有，控制器生命周期比面板长。
 @property (nonatomic, assign, nullable) id<GlassGroupPanelDelegate> delegate;

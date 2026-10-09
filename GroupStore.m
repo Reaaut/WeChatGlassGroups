@@ -12,15 +12,16 @@
 #import "GroupStore.h"
 #import "Discovery.h"
 
-NSString *const WGGGroupAllName     = @"全部";
-NSString *const WGGGroupFriendsName = @"好友";
-NSString *const WGGGroupGroupsName  = @"群聊";
+NSString *const WGGGroupAllName      = @"全部";
+NSString *const WGGGroupFriendsName  = @"好友";
+NSString *const WGGGroupGroupsName   = @"群聊";
+NSString *const WGGGroupOfficialName = @"公众号";
 
 NSArray<NSString *> *WGGAutoGroupNames(void) {
     static NSArray *names;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        names = @[ WGGGroupFriendsName, WGGGroupGroupsName ];
+        names = @[ WGGGroupFriendsName, WGGGroupGroupsName, WGGGroupOfficialName ];
     });
     return names;
 }
@@ -42,14 +43,18 @@ static NSString * const kLegacyAlphaKey    = @"WGG.blurAlpha";
 static NSString * const kSetEnabled       = @"enabled";
 static NSString * const kSetGlassAlpha    = @"glassAlpha";
 static NSString * const kSetDrawerWidth   = @"drawerWidth";
+static NSString * const kSetRowSpacing    = @"rowSpacing";
+static NSString * const kSetArrowSymbol   = @"arrowSymbolName";
 static NSString * const kSetTriggerHidden = @"triggerButtonHidden";
 static NSString * const kSetAnimated      = @"animatedPresentation";
 static NSString * const kSetSearchEnabled = @"searchEnabled";
 static NSString * const kSetLongPress     = @"longPressMenuEnabled";
 static NSString * const kSetVerbose       = @"verboseLogging";
 
-static const CGFloat kDefaultGlassAlpha  = 0.95;
-static const CGFloat kDefaultDrawerWidth = 268.0;
+static const CGFloat kDefaultGlassAlpha   = 0.95;
+static const CGFloat kDefaultDrawerWidth  = 268.0;
+static const CGFloat kDefaultRowSpacing   = 8.0;
+static NSString * const kDefaultArrowSymbol = @"chevron.right";
 
 // 前向声明（定义在文件后面）
 static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
@@ -619,6 +624,8 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
         autoMode = YES; wantKind = WGGAutoKindFriend;
     } else if ([sel isEqualToString:WGGGroupGroupsName]) {
         autoMode = YES; wantKind = WGGAutoKindGroup;
+    } else if ([sel isEqualToString:WGGGroupOfficialName]) {
+        autoMode = YES; wantKind = WGGAutoKindOfficial;
     }
 
     NSMutableArray *out = [NSMutableArray array];
@@ -655,6 +662,8 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
             counts[WGGGroupFriendsName] = @([counts[WGGGroupFriendsName] integerValue] + 1);
         } else if (k == WGGAutoKindGroup) {
             counts[WGGGroupGroupsName] = @([counts[WGGGroupGroupsName] integerValue] + 1);
+        } else if (k == WGGAutoKindOfficial) {
+            counts[WGGGroupOfficialName] = @([counts[WGGGroupOfficialName] integerValue] + 1);
         }
 
         NSString *key = [WGGGroupStore keyForConversation:conv];
@@ -706,6 +715,24 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
 }
 - (void)setDrawerWidth:(CGFloat)drawerWidth {
     [self setSetting:@(drawerWidth) forKey:kSetDrawerWidth];
+}
+
+- (CGFloat)rowSpacing {
+    return [[self settingForKey:kSetRowSpacing fallback:@(kDefaultRowSpacing)] doubleValue];
+}
+- (void)setRowSpacing:(CGFloat)rowSpacing {
+    [self setSetting:@(rowSpacing) forKey:kSetRowSpacing];
+}
+
+- (NSString *)arrowSymbolName {
+    NSString *v = [self settingForKey:kSetArrowSymbol fallback:kDefaultArrowSymbol];
+    if (![v isKindOfClass:[NSString class]] || v.length == 0) return kDefaultArrowSymbol;
+    return v;
+}
+- (void)setArrowSymbolName:(NSString *)arrowSymbolName {
+    NSString *v = [arrowSymbolName isKindOfClass:[NSString class]] && arrowSymbolName.length > 0
+                  ? arrowSymbolName : kDefaultArrowSymbol;
+    [self setSetting:v forKey:kSetArrowSymbol];
 }
 
 - (BOOL)triggerButtonHidden {

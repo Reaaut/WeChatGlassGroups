@@ -13,8 +13,8 @@
 //     全部   —— 不过滤
 //     好友   —— 单聊
 //     群聊   —— 群聊
-//  （公众号 / 系统账号会被识别出来，默认不单独列为一个分组，
-//    但归类逻辑保留，将来想在面板上多列一项只需改 autoGroupNames）
+//     公众号 —— gh_ 开头的公众号 / 服务号
+//  （系统账号如文件传输助手不单独列组，只在"全部"里出现）
 //
 //  三条铁律：
 //   1. 不 import 任何微信头文件、不 hook 任何东西 —— UI 和 Hook 都依赖它，它不依赖别人。
@@ -45,6 +45,7 @@ NS_ASSUME_NONNULL_BEGIN
 extern NSString *const WGGGroupAllName;      // @"全部" —— 不过滤
 extern NSString *const WGGGroupFriendsName;  // @"好友" —— 单聊
 extern NSString *const WGGGroupGroupsName;   // @"群聊" —— 群聊
+extern NSString *const WGGGroupOfficialName; // @"公众号" —— gh_ 开头的公众号/服务号
 
 /// 内置的**自动**分组（不含"全部"）。
 extern NSArray<NSString *> *WGGAutoGroupNames(void);
@@ -130,6 +131,8 @@ typedef NS_ENUM(NSInteger, WGGAutoKind) {
 #pragma mark 设置项（UI 层读这些值配置自己）
 @property (nonatomic, assign) CGFloat glassAlpha;          // 0.0~1.0，默认 0.95
 @property (nonatomic, assign) CGFloat drawerWidth;         // pt，默认 268
+@property (nonatomic, assign) CGFloat rowSpacing;          // 分组行间距 pt，默认 8
+@property (nonatomic, copy)   NSString *arrowSymbolName;   // 分组行箭头图标（SF Symbol 名）
 @property (nonatomic, assign) BOOL    triggerButtonHidden;
 @property (nonatomic, assign) BOOL    animatedPresentation;
 @property (nonatomic, assign) BOOL    searchEnabled;

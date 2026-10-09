@@ -92,11 +92,12 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
 @property (nonatomic, copy)   NSString *groupName;
 @property (nonatomic, strong) UILabel *nameLabel;
 @property (nonatomic, strong) UILabel *badgeLabel;
-@property (nonatomic, strong) UIView *checkDot;
+@property (nonatomic, strong) UIImageView *arrowView;   // 分组行前缀箭头（图标可换，设置页里调）
 @property (nonatomic, strong) UIVisualEffectView *blur;
 @property (nonatomic, assign) BOOL selectedRow;
 - (instancetype)initWithGroupName:(NSString *)groupName;
 - (void)setBadgeCount:(NSInteger)count;
+- (void)setArrowSymbolName:(NSString *)symbolName;
 - (void)handleTap;
 - (void)refreshAppearanceAnimated:(BOOL)animated;
 @end
@@ -128,14 +129,13 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
         _badgeLabel.textAlignment = NSTextAlignmentRight;
         _badgeLabel.hidden = YES;
 
-        // 选中标记：一个小圆点，比勾更贴合"液态玻璃"的克制感
-        _checkDot = [[UIView alloc] init];
-        _checkDot.translatesAutoresizingMaskIntoConstraints = NO;
-        _checkDot.backgroundColor = [UIColor labelColor];
-        _checkDot.layer.cornerRadius = 3.0;
-        _checkDot.hidden = YES;
+        // 分组行前缀箭头：具体用哪个 SF Symbol 由设置项决定（默认 chevron.right）
+        _arrowView = [[UIImageView alloc] init];
+        _arrowView.translatesAutoresizingMaskIntoConstraints = NO;
+        _arrowView.contentMode = UIViewContentModeScaleAspectFit;
+        [self setArrowSymbolName:nil];   // nil → 用默认图标
 
-        for (UIView *v in @[_nameLabel, _badgeLabel, _checkDot]) {
+        for (UIView *v in @[_nameLabel, _badgeLabel, _arrowView]) {
             [_blur.contentView addSubview:v];
         }
 
@@ -146,12 +146,12 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
             [_blur.leadingAnchor constraintEqualToAnchor:self.leadingAnchor],
             [_blur.trailingAnchor constraintEqualToAnchor:self.trailingAnchor],
 
-            [_checkDot.leadingAnchor constraintEqualToAnchor:m.leadingAnchor constant:2],
-            [_checkDot.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
-            [_checkDot.widthAnchor constraintEqualToConstant:6],
-            [_checkDot.heightAnchor constraintEqualToConstant:6],
+            [_arrowView.leadingAnchor constraintEqualToAnchor:m.leadingAnchor constant:2],
+            [_arrowView.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
+            [_arrowView.widthAnchor constraintEqualToConstant:13],
+            [_arrowView.heightAnchor constraintEqualToConstant:13],
 
-            [_nameLabel.leadingAnchor constraintEqualToAnchor:_checkDot.trailingAnchor constant:8],
+            [_nameLabel.leadingAnchor constraintEqualToAnchor:_arrowView.trailingAnchor constant:8],
             [_nameLabel.centerYAnchor constraintEqualToAnchor:self.centerYAnchor],
 
             [_badgeLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
@@ -194,12 +194,12 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
             self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.85];
             self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:1.0].CGColor;
             self.nameLabel.textColor = [UIColor labelColor];
-            self.checkDot.hidden = NO;
+            self.arrowView.tintColor = [UIColor labelColor];
         } else {
             self.blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
             self.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
             self.nameLabel.textColor = [UIColor secondaryLabelColor];
-            self.checkDot.hidden = YES;
+            self.arrowView.tintColor = [UIColor tertiaryLabelColor];
         }
     };
     if (animated) {
@@ -207,6 +207,16 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
     } else {
         apply();
     }
+}
+
+/// 换分组行的箭头图标。传 nil 或无效的 SF Symbol 名 → 用默认 chevron.right。
+/// 选中态的 tint 在 refreshAppearance 里统一上色，这里只负责换图。
+- (void)setArrowSymbolName:(NSString *)symbolName {
+    UIImage *img = nil;
+    if (symbolName.length > 0) img = WGGSymbol(symbolName, 13, UIFontWeightSemibold);
+    if (!img) img = WGGSymbol(@"chevron.right", 13, UIFontWeightSemibold);
+    _arrowView.image = img;          // UIImageView 的属性 setter 会 retain
+    _arrowView.hidden = (img == nil);
 }
 
 - (void)setBadgeCount:(NSInteger)count {
@@ -223,7 +233,7 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
     [_groupName release];
     [_nameLabel release];
     [_badgeLabel release];
-    [_checkDot release];
+    [_arrowView release];
     [_blur release];
     [super dealloc];
 }
@@ -247,6 +257,8 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
 @property (nonatomic, strong) NSLayoutConstraint *searchHeightConstraint;
 @property (nonatomic, strong) NSDictionary<NSString *, NSNumber *> *badges;
 @property (nonatomic, assign) BOOL didBuildHierarchy;
+@property (nonatomic, strong) UIControl *settingsRow;      // 底部「设置」入口
+@property (nonatomic, strong) UILabel *settingsLabel;
 
 // 私有方法显式声明：避免"方法定义在调用点之后"在 -Werror 下出问题
 - (void)buildHierarchy;
@@ -254,6 +266,7 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
 - (void)rowTapped:(WGGRowView *)sender;
 - (void)searchChanged;
 - (void)applySearchVisibility;
+- (void)settingsRowTapped;
 @end
 
 @implementation GlassGroupPanel
@@ -265,6 +278,8 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
         _glassAlpha = 0.95;
         _cornerRadius = kDrawerRadius;
         _searchEnabled = YES;
+        _rowSpacing = kRowSpacing;
+        _arrowSymbolName = [@"chevron.right" copy];
         _rows = [[NSMutableArray alloc] init];
         _badges = nil;
         self.translatesAutoresizingMaskIntoConstraints = NO;
@@ -330,7 +345,9 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
     // 注意：这里**不要**加进 _glass.contentView，统一在下面那个循环里加，
     //       加两次虽然不会崩，但会让 z 顺序变得难以预料。
 
-    UIImageView *searchIcon = [[UIImageView alloc] init];
+    // ⚠️ MRC：这三个是局部变量，alloc 出来的 +1 必须还给池子，
+    //    否则 addSubview 的 retain 之外还多出一个没人放的引用 → 永久泄漏。
+    UIImageView *searchIcon = [[[UIImageView alloc] init] autorelease];
     searchIcon.translatesAutoresizingMaskIntoConstraints = NO;
     searchIcon.image = WGGSymbol(@"magnifyingglass", 15, UIFontWeightRegular);
     searchIcon.tintColor = [UIColor secondaryLabelColor];
@@ -349,11 +366,43 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
            forControlEvents:UIControlEventEditingChanged];
     [_searchBlur.contentView addSubview:_searchField];
 
+    // 底部「设置」入口：点它推出插件设置页（由 Hook 层负责 push）
+    _settingsRow = [[UIControl alloc] init];
+    _settingsRow.translatesAutoresizingMaskIntoConstraints = NO;
+    _settingsRow.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.30];
+    _settingsRow.layer.cornerRadius = 12.0;
+    _settingsRow.layer.cornerCurve = kCACornerCurveContinuous;
+    [_settingsRow addTarget:self action:@selector(settingsRowTapped)
+           forControlEvents:UIControlEventTouchUpInside];
+
+    UIImageView *gearIcon = [[[UIImageView alloc] init] autorelease];   // MRC：见下方说明
+    gearIcon.translatesAutoresizingMaskIntoConstraints = NO;
+    gearIcon.image = WGGSymbol(@"gearshape", 14, UIFontWeightRegular);
+    gearIcon.tintColor = [UIColor secondaryLabelColor];
+    gearIcon.contentMode = UIViewContentModeScaleAspectFit;
+    gearIcon.tag = 1;
+    [_settingsRow addSubview:gearIcon];
+
+    _settingsLabel = [[UILabel alloc] init];
+    _settingsLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    _settingsLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    _settingsLabel.textColor = [UIColor secondaryLabelColor];
+    _settingsLabel.text = @"设置";
+    [_settingsRow addSubview:_settingsLabel];
+
+    UIImageView *settingsChevron = [[[UIImageView alloc] init] autorelease];   // MRC：同上
+    settingsChevron.translatesAutoresizingMaskIntoConstraints = NO;
+    settingsChevron.image = WGGSymbol(@"chevron.right", 11, UIFontWeightSemibold);
+    settingsChevron.tintColor = [UIColor tertiaryLabelColor];
+    settingsChevron.contentMode = UIViewContentModeScaleAspectFit;
+    settingsChevron.tag = 2;
+    [_settingsRow addSubview:settingsChevron];
+
     // ⚠️ 这几个必须全部加进 _glass.contentView，一个都不能漏。
     //    漏掉任何一个，它的约束和 layoutMarginsGuide 就没有共同祖先，
     //    激活约束时会直接崩："Unable to activate constraint with anchors ... no common ancestor"。
     for (UIView *v in @[_avatarView, _titleLabel, _subtitleLabel,
-                        _sectionLabel, _scrollView, _searchBlur]) {
+                        _sectionLabel, _scrollView, _searchBlur, _settingsRow]) {
         [_glass.contentView addSubview:v];
     }
 
@@ -400,7 +449,26 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
         [_searchBlur.topAnchor constraintGreaterThanOrEqualToAnchor:_scrollView.bottomAnchor constant:10],
         [_searchBlur.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
         [_searchBlur.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
-        [_searchBlur.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+
+        // 设置入口（在搜索框下面一行）
+        [_settingsRow.topAnchor constraintEqualToAnchor:_searchBlur.bottomAnchor constant:8],
+        [_settingsRow.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [_settingsRow.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [_settingsRow.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+        [_settingsRow.heightAnchor constraintEqualToConstant:34],
+
+        [gearIcon.leadingAnchor constraintEqualToAnchor:_settingsRow.leadingAnchor constant:12],
+        [gearIcon.centerYAnchor constraintEqualToAnchor:_settingsRow.centerYAnchor],
+        [gearIcon.widthAnchor constraintEqualToConstant:15],
+        [gearIcon.heightAnchor constraintEqualToConstant:15],
+
+        [_settingsLabel.leadingAnchor constraintEqualToAnchor:gearIcon.trailingAnchor constant:7],
+        [_settingsLabel.centerYAnchor constraintEqualToAnchor:_settingsRow.centerYAnchor],
+
+        [settingsChevron.trailingAnchor constraintEqualToAnchor:_settingsRow.trailingAnchor constant:-12],
+        [settingsChevron.centerYAnchor constraintEqualToAnchor:_settingsRow.centerYAnchor],
+        [settingsChevron.widthAnchor constraintEqualToConstant:11],
+        [settingsChevron.heightAnchor constraintEqualToConstant:11],
 
         [searchIcon.leadingAnchor constraintEqualToAnchor:_searchBlur.contentView.leadingAnchor constant:12],
         [searchIcon.centerYAnchor constraintEqualToAnchor:_searchBlur.contentView.centerYAnchor],
@@ -444,6 +512,7 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
         WGGRowView *row = [[[WGGRowView alloc] initWithGroupName:name] autorelease];
         [row addTarget:self action:@selector(rowTapped:) forControlEvents:UIControlEventValueChanged];
         [row.heightAnchor constraintEqualToConstant:kRowHeight].active = YES;
+        [row setArrowSymbolName:_arrowSymbolName];   // 箭头图标（设置页可换）
         [_rowStack addArrangedSubview:row];
         [_rows addObject:row];
         NSNumber *b = _badges[name];
@@ -474,6 +543,12 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
 - (void)searchChanged {
     if ([self.delegate respondsToSelector:@selector(glassGroupPanel:didChangeSearchText:)]) {
         [self.delegate glassGroupPanel:self didChangeSearchText:_searchField.text ?: @""];
+    }
+}
+
+- (void)settingsRowTapped {
+    if ([self.delegate respondsToSelector:@selector(glassGroupPanelDidRequestSettings:)]) {
+        [self.delegate glassGroupPanelDidRequestSettings:self];
     }
 }
 
@@ -529,6 +604,26 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
     [self applySearchVisibility];
 }
 
+/// 行间距：设置页拖动滑杆实时生效（改 stack 的 spacing 就够了）。
+- (void)setRowSpacing:(CGFloat)rowSpacing {
+    _rowSpacing = MAX(0.0, MIN(24.0, rowSpacing));
+    _rowStack.spacing = _rowSpacing;
+}
+
+/// 换箭头图标：直接刷新所有行（行数不多，开销可忽略）。
+- (void)setArrowSymbolName:(NSString *)arrowSymbolName {
+    NSString *copy = (arrowSymbolName.length > 0) ? [arrowSymbolName copy] : [@"chevron.right" copy];
+    if (_arrowSymbolName && [copy isEqualToString:_arrowSymbolName]) {
+        [copy release];
+        return;
+    }
+    [_arrowSymbolName release];
+    _arrowSymbolName = copy;
+    for (WGGRowView *row in _rows) {
+        [row setArrowSymbolName:_arrowSymbolName];
+    }
+}
+
 - (void)applySearchVisibility {
     if (!_didBuildHierarchy) return;
     _searchBlur.hidden = !_searchEnabled;
@@ -566,9 +661,12 @@ static UIImage *WGGSymbol(NSString *name, CGFloat size, UIFontWeight weight) {
     [_rows release];
     [_searchBlur release];
     [_searchField release];
+    [_settingsRow release];
+    [_settingsLabel release];
     [_widthConstraint release];
     [_searchHeightConstraint release];
     [_badges release];
+    [_arrowSymbolName release];
     [super dealloc];
 }
 
