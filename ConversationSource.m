@@ -9,6 +9,7 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import "Discovery.h"   // WGGLogMessage（落文件日志）
 
 // 已解析的 ivar 路径：如 @[@"m_mainFrameLogicController", @"m_arrData"]。
 // MRC：alloc/init 产物，static 持有，替换时先 release。
@@ -134,12 +135,109 @@ static void WGGCollectArrayCandidates(id obj, NSArray<NSString *> *prefix,
     }
 }
 
+#pragma mark - 逻辑层全量枚举
+
+/// 从微信逻辑层枚举全部分区会话（置顶区/常规区/折叠区都算）。
+/// 【用户实测】好友被微信"折叠置顶"后就不在 m_frontSessionArray 里了
+/// （数组分布 好友=0，但微信自己的分区里有 18+ 行）——分组数量对不上
+/// 就是因为只看这个数组。逻辑层的分区接口才是全量。
+static NSArray *WGGEnumerateLogicSessions(id vc) {
+    @autoreleasepool {
+        Ivar lv = class_getInstanceVariable([vc class], "m_mainFrameLogicController");
+        if (!lv) return nil;
+        id logic = object_getIvar(vc, lv);
+        if (!logic) return nil;
+
+        SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
+        SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+        if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selAt]) return nil;
+
+        NSMutableArray *out = [NSMutableArray array];
+        for (NSUInteger s = 0; s < 6; s++) {
+            NSInteger n = ((NSInteger (*)(id, SEL, NSUInteger))objc_msgSend)(logic, selCnt, s);
+            if (n <= 0) continue;
+            if (n > 500) n = 500;   // 保险丝：防异常返回撑爆
+            for (NSUInteger r = 0; r < (NSUInteger)n; r++) {
+                NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
+                id sess = ((id (*)(id, SEL, id))objc_msgSend)(logic, selAt, ip);
+                if (sess) [out addObject:sess];
+            }
+        }
+        return out;
+    }
+}
+
+/// 猜会话的用户名（多候选 ivar 原始读取，读不到 nil）。
+static NSString *WGGGuessUsername(id sess) {
+    if (!sess) return nil;
+    Class c = [sess class];
+    NSArray *names = @[@"_userName", @"m_nsUserName", @"m_nsUsrName",
+                        @"userName", @"m_nsFromUsrName", @"m_nsTalker"];
+    for (NSString *n in names) {
+        Ivar iv = class_getInstanceVariable(c, n.UTF8String);
+        if (iv) {
+            id v = object_getIvar(sess, iv);
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
+                return v;
+            }
+        }
+    }
+    return nil;
+}
+
+/// 合并 front 数组 + 逻辑层枚举结果（按用户名去重，front 优先）。
+/// 返回自动释放数组；读不出用户名的逻辑层对象跳过（避免 "?" 垃圾行）。
+static NSArray *WGGMergeWithLogicSessions(NSArray *front, id vc) {
+    NSArray *logicSessions = WGGEnumerateLogicSessions(vc);
+    if (logicSessions.count == 0) return front;
+
+    // 校验：逻辑层对象的用户名必须读得出，否则别混进来（下轮适配字段）
+    NSString *probe = WGGGuessUsername(logicSessions[0]);
+    if (!probe) {
+        static BOOL gWarned = NO;
+        if (!gWarned) {
+            gWarned = YES;
+            WGGLogMessage([NSString stringWithFormat:
+                           @"逻辑层会话对象读不出用户名（类=%@），暂不并入——待字段适配",
+                           NSStringFromClass([logicSessions[0] class])]);
+        }
+        return front;
+    }
+
+    NSMutableSet *seen = [[NSMutableSet alloc] init];
+    NSMutableArray *merged = [NSMutableArray array];
+    for (id c in front) {
+        NSString *k = WGGGuessUsername(c);
+        if (k) [seen addObject:k];
+        [merged addObject:c];
+    }
+    NSUInteger added = 0;
+    for (id s in logicSessions) {
+        NSString *k = WGGGuessUsername(s);
+        if (!k || [seen containsObject:k]) continue;
+        [seen addObject:k];
+        [merged addObject:s];
+        added++;
+    }
+    [seen release];
+
+    static BOOL gLogged = NO;
+    if (!gLogged) {
+        gLogged = YES;
+        WGGLogMessage([NSString stringWithFormat:
+                       @"逻辑层会话并入：front=%lu + 逻辑层补=%lu → 共 %lu",
+                       (unsigned long)front.count, added, (unsigned long)merged.count]);
+    }
+    return merged;
+}
+
 #pragma mark - 对外接口
 
 @implementation WGGConversationSource
 
 + (NSArray *)conversationsForViewController:(id)vc {
     if (!vc) return nil;
+    NSArray *front = nil;
 
     // 1) 已有缓存路径 → 直接走（快路径，每次 reload 都会走这里）
     if (gIvarPath && gOwnerClassName) {
@@ -147,31 +245,35 @@ static void WGGCollectArrayCandidates(id obj, NSArray<NSString *> *prefix,
         if ([gOwnerClassName isEqualToString:cls]) {
             id val = WGGObjectAtIvarPath(vc, gIvarPath);
             if ([val isKindOfClass:[NSArray class]] && [(NSArray *)val count] > 0) {
-                return (NSArray *)val;
+                front = (NSArray *)val;
             }
         }
         // 路径失效（换实例/微信更新）→ 重新发现
     }
 
     // 2) 重新发现：递归收集候选，选"分数最高"（元素多 + 名字像会话数组）
-    NSMutableArray *results = [NSMutableArray array];
-    WGGCollectArrayCandidates(vc, [NSArray array], 0, results);
-    if (results.count == 0) return nil;
+    if (!front) {
+        NSMutableArray *results = [NSMutableArray array];
+        WGGCollectArrayCandidates(vc, [NSArray array], 0, results);
+        if (results.count == 0) return nil;
 
-    NSUInteger best = 0;
-    for (NSUInteger i = 1; i < results.count; i++) {
-        if ([results[i][@"score"] integerValue] > [results[best][@"score"] integerValue]) best = i;
+        NSUInteger best = 0;
+        for (NSUInteger i = 1; i < results.count; i++) {
+            if ([results[i][@"score"] integerValue] > [results[best][@"score"] integerValue]) best = i;
+        }
+        NSArray *path = results[best][@"path"];
+        front = results[best][@"arr"];
+
+        // 3) 缓存路径（MRC：先放旧值）
+        [gIvarPath release];
+        gIvarPath = [[NSArray alloc] initWithArray:path];
+        [gOwnerClassName release];
+        gOwnerClassName = [[NSString alloc] initWithString:NSStringFromClass([vc class])];
     }
-    NSArray *path = results[best][@"path"];
-    NSArray *arr = results[best][@"arr"];
 
-    // 3) 缓存路径（MRC：先放旧值）
-    [gIvarPath release];
-    gIvarPath = [[NSArray alloc] initWithArray:path];
-    [gOwnerClassName release];
-    gOwnerClassName = [[NSString alloc] initWithString:NSStringFromClass([vc class])];
-
-    return arr;
+    // 4) 并入逻辑层全量枚举（折叠/置顶区的会话不在 front 数组里——
+    //    【用户实测】好友数量对不上就是这个原因）
+    return WGGMergeWithLogicSessions(front, vc);
 }
 
 + (BOOL)isSearchingViewController:(id)vc {

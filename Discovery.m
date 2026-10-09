@@ -409,6 +409,56 @@ void WGGProbeConversations(void) {
                (unsigned long)friends, (unsigned long)groups,
                (unsigned long)official, (unsigned long)sys, (unsigned long)unknown);
 
+        // 【分区探测】微信首页是多分区的（置顶/常规/折叠）。逐区问逻辑层要行数，
+        // 每区取第一个会话"体检"——如果不是 FakeMainFrameCellData（字段已实锤），
+        // 就转储它的成员变量，下一轮按真实字段适配读取链。
+        {
+            Ivar lv = class_getInstanceVariable([ds class], "m_mainFrameLogicController");
+            id logic = lv ? object_getIvar(ds, lv) : nil;
+            if (logic) {
+                SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
+                SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+                if ([logic respondsToSelector:selCnt] && [logic respondsToSelector:selAt]) {
+                    WGGLog(@"分区探测：逻辑层=%@", NSStringFromClass([logic class]));
+                    for (NSUInteger s = 0; s < 6; s++) {
+                        NSInteger n = ((NSInteger (*)(id, SEL, NSUInteger))objc_msgSend)(logic, selCnt, s);
+                        if (n <= 0) continue;
+                        if (n > 500) n = 500;   // 保险丝
+                        WGGLog(@"分区探测：第%lu区 行数=%ld", (unsigned long)s, (long)n);
+                        NSIndexPath *ip = [NSIndexPath indexPathForRow:0 inSection:s];
+                        id sess = ((id (*)(id, SEL, id))objc_msgSend)(logic, selAt, ip);
+                        if (!sess) continue;
+                        NSString *cls = NSStringFromClass([sess class]);
+                        if ([cls isEqualToString:@"FakeMainFrameCellData"]) continue;
+                        unsigned int ic = 0;
+                        Ivar *ivs = class_copyIvarList([sess class], &ic);
+                        WGGLog(@"分区探测：第%lu区会话类=%@ 成员变量（%u 个）",
+                               (unsigned long)s, cls, ic);
+                        unsigned int shown = ic < 40 ? ic : 40;
+                        for (unsigned int i = 0; i < shown; i++) {
+                            Ivar iv = ivs[i];
+                            const char *nn = ivar_getName(iv);
+                            const char *tt = ivar_getTypeEncoding(iv);
+                            NSString *val = @"(标量)";
+                            if (tt && (tt[0] == '@' || tt[0] == '#')) {
+                                id v = object_getIvar(sess, iv);
+                                if (!v) val = @"(nil)";
+                                else if ([v isKindOfClass:[NSString class]]) {
+                                    NSString *sv = (NSString *)v;
+                                    NSString *trim = sv.length > 40 ? [sv substringToIndex:40] : sv;
+                                    val = [NSString stringWithFormat:@"\"%@\"", trim];
+                                }
+                                else if ([v isKindOfClass:[NSNumber class]]) val = [v description];
+                                else val = [NSString stringWithFormat:@"<%@>", NSStringFromClass([v class])];
+                            }
+                            WGGLog(@"   %s (%s) = %@", nn ? nn : "?", tt ? tt : "?", val);
+                        }
+                        if (ivs) free(ivs);
+                    }
+                }
+            }
+        }
+
         // 【转储】第一个会话对象的全部成员变量（值截断 40 字符）——
         // 自绘会话 cell 要用到昵称/消息/时间/未读的真实字段名，就看这里。
         if (found.count > 0) {

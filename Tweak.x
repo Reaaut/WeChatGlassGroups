@@ -259,19 +259,24 @@ static void WGGInstallDrawerIfNeeded(UIViewController *vc) {
 /// 对被 push 的页面有一堆内部约定（日志实锤它有 haveLazyInit 等自定义流程），
 /// 普通 UIViewController 被它 push 会在那些流程里闪退（用户实测：一点就崩）。
 /// 模态 FormSheet 走标准 UIKit，微信自己也这么用，最稳。
-static void WGGPushSettingsFrom(UIViewController *vc) {
+/// 参数用 id：%hook 里 self 是"无头文件"的类，编译器不认识它的继承关系。
+/// 每一步都写日志（同步落盘）：闪退时最后一行就是案发现场。
+static void WGGPushSettingsFrom(id vcObj) {
+    UIViewController *vc = (UIViewController *)vcObj;
     if (!vc) return;
+    WGGLogMessage([NSString stringWithFormat:@"设置页：①入口触发（来源 %@）", NSStringFromClass([vc class])]);
     // 已在展示设置页就不再弹（手势+控件双路径的保险）
     if ([vc.presentedViewController isKindOfClass:[WGGSettingsController class]]) {
         WGGLogMessage(@"设置页：已在展示，忽略重复点击");
         return;
     }
-    WGGLogMessage([NSString stringWithFormat:@"设置页：准备从 %@ 模态弹出", NSStringFromClass([vc class])]);
+    WGGLogMessage(@"设置页：②开始创建设置控制器");
     WGGSettingsController *settings = [[[WGGSettingsController alloc] init] autorelease];
     settings.modalPresentationStyle = UIModalPresentationFormSheet;
+    WGGLogMessage(@"设置页：③控制器创建完成，开始模态弹出");
     @try {
         [vc presentViewController:settings animated:YES completion:nil];
-        WGGLogMessage(@"设置页：模态弹出调用完成");
+        WGGLogMessage(@"设置页：④模态弹出调用完成");
     } @catch (NSException *e) {
         WGGLogMessage([NSString stringWithFormat:@"设置页：弹出失败 %@", e]);
     }
@@ -606,6 +611,11 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
         Ivar iv = class_getInstanceVariable(chatCls, "m_nsNickName");
         if (iv) object_setIvar(chat, iv, [(nick ?: @"") retain]);
     }
+    // 8.x 部分版本还需要真实会话用户名，有就一并塞上
+    SEL setReal = NSSelectorFromString(@"setM_nsRealChatUsrName:");
+    if ([chat respondsToSelector:setReal]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(chat, setReal, username);
+    }
 
     UINavigationController *nav = ((UIViewController *)fromVC).navigationController;
     if (!nav) {
@@ -646,6 +656,9 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isSettingsRow) {
+                return [WGGQQList settingsCellForTable:tableView];
+            }
             if (v.isHeader) {
                 UITableViewCell *c = [WGGQQList headerCellForTable:tableView virtualRow:v];
                 c.tag = indexPath.row;
@@ -675,6 +688,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isSettingsRow) return [WGGQQList headerHeight];
             if (v.isHeader) return [WGGQQList headerHeight];
             return [WGGQQList conversationHeight];   // 不再问微信（它只认自己的小子集）
         }
@@ -711,6 +725,12 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isSettingsRow) {
+                [tableView deselectRowAtIndexPath:indexPath animated:NO];
+                WGGLogMessage(@"点设置行 → 弹出插件设置");
+                WGGPushSettingsFrom(self);
+                return;
+            }
             if (v.isHeader) {
                 [WGGQQList toggleGroupNamed:v.groupName];
                 [tableView deselectRowAtIndexPath:indexPath animated:NO];
@@ -722,27 +742,57 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
             id conv = [WGGQQList conversationForVC:self row:v];
             NSString *username = conv ? [WGGGroupStore keyForConversation:conv] : nil;
 
-            // 首选：直接构造聊天页。原生 didSelect 里有越界检查（它问的是
-            // 表格自己的行数——我们已把微信区清零，它的行号会被判成
-            // "意外点击"而静默跳过），所以不能再依赖 %orig。
+            // 把用户名换成微信自己的行号（它的会话对象都在逻辑层按分区存着）
             NSIndexPath *nativeIP = nil;
             SEL selIP = NSSelectorFromString(@"indexPathOfSessionUserName:");
             if (username.length > 0 && [self respondsToSelector:selIP]) {
                 nativeIP = ((NSIndexPath * (*)(id, SEL, id))objc_msgSend)(self, selIP, username);
             }
+
+            // 【首选】微信自己的"内层选择处理"（原生 didSelect 的下一步就是它，
+            // 但没有 didSelect 的越界检查——我们把微信区清零后原生 didSelect
+            // 会把自己的行号判成"意外点击"而静默跳过，所以直接调内层）。
+            // 走这条路微信用它自己的会话对象开页，消息/头像/输入框全齐。
+            SEL selHandle = NSSelectorFromString(@"handleSelectIndexPath:tableView:");
+            if (nativeIP && [self respondsToSelector:selHandle]) {
+                ((void (*)(id, SEL, id, id))objc_msgSend)(self, selHandle, nativeIP, tableView);
+                WGGLogMessage([NSString stringWithFormat:
+                               @"点会话 虚拟行=%ld 用户名=%@ 路径=handleSelect 微信索引=[第%ld节 第%ld行]",
+                               (long)indexPath.row, username,
+                               (long)nativeIP.section, (long)nativeIP.row]);
+                return;
+            }
+
+            // 【次选】拿微信自己的会话对象 → 交给它自己的打开逻辑
+            SEL selGet = NSSelectorFromString(@"logicGetSessionAtIndexPath:");
+            SEL selOpen = NSSelectorFromString(@"onLogicOpenSession:");
+            if (nativeIP && [self respondsToSelector:selGet] && [self respondsToSelector:selOpen]) {
+                id sess = ((id (*)(id, SEL, id))objc_msgSend)(self, selGet, nativeIP);
+                if (sess) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(self, selOpen, sess);
+                    WGGLogMessage([NSString stringWithFormat:
+                                   @"点会话 虚拟行=%ld 用户名=%@ 路径=onLogicOpen 微信索引=[第%ld节 第%ld行]",
+                                   (long)indexPath.row, username,
+                                   (long)nativeIP.section, (long)nativeIP.row]);
+                    return;
+                }
+            }
+
+            // 【兜底】直接构造聊天页（微信自己的行号拿不到时才用；
+            // 实测这路进得去但消息空白，仅保证"能进"）
             BOOL opened = NO;
             if (username.length > 0) {
                 opened = WGGOpenChatDirect(self, username,
                                            [WGGQQList displayNameForConversation:conv] ?: @"");
             }
             WGGLogMessage([NSString stringWithFormat:
-                           @"点会话 虚拟行=%ld 用户名=%@ 直开=%@ 微信索引=[第%ld节 第%ld行]",
+                           @"点会话 虚拟行=%ld 用户名=%@ 直开=%@（微信索引=%@）",
                            (long)indexPath.row, username,
                            opened ? @"✓" : @"✗",
-                           nativeIP ? (long)nativeIP.section : -1L,
-                           nativeIP ? (long)nativeIP.row : -1L]);
+                           nativeIP ? [NSString stringWithFormat:@"[第%ld节 第%ld行]",
+                                       (long)nativeIP.section, (long)nativeIP.row] : @"(无)"]);
             if (!opened && nativeIP) {
-                %orig(tableView, nativeIP);   // 直开失败 → 用微信自己的行号走原生
+                %orig(tableView, nativeIP);   // 最后手段：原生路径
             }
             return;
         }
@@ -761,7 +811,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups loaded（QQ 式分组列表 + 设置页入口）");
+        WGGLogMessage(@"WeChatGlassGroups v0.3.5 loaded（分组唯一列表 + 设置行 + 分区收编）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

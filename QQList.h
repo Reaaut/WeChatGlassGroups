@@ -20,10 +20,11 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// 虚拟行：表头行 或 原始会话行的映射。
+/// 虚拟行：表头行 / 原始会话行的映射 / 底部设置行。
 /// 工厂方法返回 +1（调用方负责 release）。
 @interface WGGVirtualRow : NSObject
 @property (nonatomic, assign, readonly) BOOL isHeader;
+@property (nonatomic, assign, readonly) BOOL isSettingsRow;       // 底部"会话分组设置"行
 @property (nonatomic, copy, readonly) NSString *groupName;        // 表头行：组名
 @property (nonatomic, assign, readonly) NSUInteger groupCount;    // 表头行：组内会话数
 @property (nonatomic, assign, readonly) BOOL collapsed;           // 表头行：是否折叠
@@ -33,6 +34,7 @@ NS_ASSUME_NONNULL_BEGIN
                                  count:(NSUInteger)count
                              collapsed:(BOOL)collapsed;
 + (instancetype)conversationRowAtIndex:(NSUInteger)index;
++ (instancetype)settingsRow;
 @end
 
 @interface WGGQQList : NSObject
@@ -49,6 +51,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// 生成/复用玻璃分组表头 cell（传入该行的虚拟行模型）。
 + (UITableViewCell *)headerCellForTable:(UITableView *)tableView
                              virtualRow:(WGGVirtualRow *)virtualRow;
+
+/// 底部「⚙ 会话分组设置」行的玻璃 cell。
++ (UITableViewCell *)settingsCellForTable:(UITableView *)tableView;
 
 /// 折叠/展开某分组（持久化），调用后请 reloadData。
 + (void)toggleGroupAtRow:(NSInteger)row;

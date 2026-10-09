@@ -40,6 +40,7 @@ static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys);
 
 @interface WGGVirtualRow ()
 @property (nonatomic, assign, readwrite) BOOL isHeader;
+@property (nonatomic, assign, readwrite) BOOL isSettingsRow;
 @property (nonatomic, copy, readwrite) NSString *groupName;
 @property (nonatomic, assign, readwrite) NSUInteger groupCount;
 @property (nonatomic, assign, readwrite) BOOL collapsed;
@@ -72,6 +73,16 @@ static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys);
     if (r) {
         r->_isHeader = NO;
         r->_originalIndex = index;
+    }
+    return r;
+}
+
++ (instancetype)settingsRow {
+    WGGVirtualRow *r = [[WGGVirtualRow alloc] init];   // +1，调用方负责
+    if (r) {
+        r->_isHeader = NO;
+        r->_isSettingsRow = YES;
+        r->_originalIndex = NSNotFound;
     }
     return r;
 }
@@ -173,7 +184,12 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
                      collapsed:(BOOL)collapsed
                     arrowSymbol:(NSString *)symbolName {
     _nameLabel.text = name;
-    _countLabel.text = [NSString stringWithFormat:@"%lu", (unsigned long)count];
+    // NSUIntegerMax = 不显示计数（设置行等非分组行复用这个 cell 时用）
+    if (count == NSUIntegerMax) {
+        _countLabel.text = @"";
+    } else {
+        _countLabel.text = [NSString stringWithFormat:@"%lu", (unsigned long)count];
+    }
 
     // 玻璃透明度跟随设置（用户可调）
     WGGGroupStore *store = [WGGGroupStore shared];
@@ -262,6 +278,13 @@ static NSTimeInterval gLastToggleTime = 0.0;
             }
         }
     }
+
+    // 底部固定一行「⚙ 会话分组设置」——设置页胶囊被微信 footer 坑了点不动，
+    // 这行走的是和分组表头完全相同的点击路径（已验证可靠），永远可达。
+    WGGVirtualRow *sr = [WGGVirtualRow settingsRow];
+    [rows addObject:sr];
+    [sr release];
+
     return rows;
 }
 
@@ -287,6 +310,21 @@ static NSTimeInterval gLastToggleTime = 0.0;
                            collapsed:v.collapsed
                           arrowSymbol:store.arrowSymbolName];
     }
+    return cell;
+}
+
+/// 底部「⚙ 会话分组设置」行：复用玻璃表头样式，右侧箭头用 chevron，
+/// 不显示计数。点击走 didSelect（和分组表头同路径）。
++ (UITableViewCell *)settingsCellForTable:(UITableView *)tableView {
+    WGGSectionHeaderCell *cell = [tableView dequeueReusableCellWithIdentifier:kWGGHeaderReuseID];
+    if (!cell) {
+        cell = [[[WGGSectionHeaderCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                            reuseIdentifier:kWGGHeaderReuseID] autorelease];
+    }
+    [cell configureWithGroupName:@"⚙  会话分组设置"
+                           count:NSUIntegerMax
+                       collapsed:NO
+                     arrowSymbol:@"chevron.right"];
     return cell;
 }
 
@@ -552,6 +590,7 @@ static UIColor *WGGColorForName(NSString *name) {
 
     NSString *msg = WGGReadStr(conversation, @[
         @"_textForMessageLabel", @"textForMessageLabel",
+        @"m_nsDigest", @"digest", @"m_nsAbstract", @"abstract",
         @"m_nsMessage", @"message", @"m_strMessage", @"m_nsLastMsg", @"lastMessage", @"m_lastMsgText"]);
     if (!msg) {
         id wrap = WGGReadObj(conversation, @[
@@ -563,10 +602,11 @@ static UIColor *WGGColorForName(NSString *name) {
 
     NSString *time = WGGReadStr(conversation, @[
         @"_textForTimeLabel", @"textForTimeLabel",
-        @"m_timeString", @"m_nsTimeString", @"timeString", @"m_timeStr", @"timeText"]);
+        @"m_nsTime", @"time", @"m_nsTimeStr", @"m_timeString", @"m_nsTimeString", @"timeString", @"m_timeStr", @"timeText"]);
     if (!time) {
         NSNumber *ts = WGGReadNum(conversation, @[
-            @"m_uiLastMsgTime", @"lastMsgTime", @"m_lastMsgTime", @"m_uiTimeStamp"]);
+            @"m_uiLastMsgTime", @"lastMsgTime", @"m_lastMsgTime", @"m_uiTimeStamp",
+            @"m_uiCreateTime", @"createTime", @"m_uiTime", @"timestamp"]);
         if (ts) {
             NSTimeInterval ti = ts.doubleValue;
             if (ti > 1e12) ti /= 1000.0;    // 毫秒 → 秒
