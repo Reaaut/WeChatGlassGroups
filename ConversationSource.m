@@ -135,151 +135,6 @@ static void WGGCollectArrayCandidates(id obj, NSArray<NSString *> *prefix,
     }
 }
 
-#pragma mark - 逻辑层全量枚举
-
-/// 从微信逻辑层枚举全部分区会话（置顶区/常规区/折叠区都算）。
-/// 【用户实测】好友被微信"折叠置顶"后就不在 m_frontSessionArray 里了
-/// （数组分布 好友=0，但微信自己的分区里有 18+ 行）——分组数量对不上
-/// 就是因为只看这个数组。逻辑层的分区接口才是全量。
-/// 【0.3.5 闪退实锤】启动期微信数据未就绪时调它的分区接口会硬崩
-/// （日志最后一行停在 GroupStore 就绪，连"页面出现"都没走到——
-/// numberOfRows 首次布局就崩）。三重保险：
-///   ① hasLoadSessionData==YES 才允许调（就绪开关，方法清单实锤存在）；
-///   ② 整个枚举包 @try（分区接口对越界会抛异常）；
-///   ③ 结果缓存，front 数量不变就不重调（热路径零开销）。
-static NSArray *gLogicSessionsCache = nil;   // +1，MRC
-static NSUInteger gLogicFrontCount = 0;      // 上次合并时的 front 数
-
-static NSArray *WGGEnumerateLogicSessions(id logic) {
-    @autoreleasepool {
-        if (!logic) return nil;
-
-        // ① 就绪守卫：数据没加载完绝不动它的分区接口
-        SEL selReady = NSSelectorFromString(@"hasLoadSessionData");
-        if ([logic respondsToSelector:selReady]) {
-            BOOL ready = ((BOOL (*)(id, SEL))objc_msgSend)(logic, selReady);
-            if (!ready) return nil;
-        }
-
-        SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
-        SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
-        if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selAt]) return nil;
-
-        NSMutableArray *out = [NSMutableArray array];
-        @try {
-            for (NSUInteger s = 0; s < 6; s++) {
-                NSInteger n = ((NSInteger (*)(id, SEL, NSUInteger))objc_msgSend)(logic, selCnt, s);
-                if (n <= 0) continue;
-                if (n > 500) n = 500;   // 保险丝：防异常返回撑爆
-                for (NSUInteger r = 0; r < (NSUInteger)n; r++) {
-                    NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
-                    id sess = ((id (*)(id, SEL, id))objc_msgSend)(logic, selAt, ip);
-                    if (sess) [out addObject:sess];
-                }
-            }
-        } @catch (NSException *e) {
-            static BOOL gEnumWarned = NO;
-            if (!gEnumWarned) {
-                gEnumWarned = YES;
-                WGGLogMessage([NSString stringWithFormat:
-                               @"逻辑层枚举异常（跳过本轮）：%@", e]);
-            }
-            return nil;
-        }
-        return out;
-    }
-}
-
-/// 猜会话的用户名（多候选 ivar 原始读取，读不到 nil）。
-/// ⚠️ 必须先验类型编码是 '@'——标量 ivar 直接 object_getIvar 会把
-/// 垃圾指针当对象用，isKindOfClass 就是内存崩溃。
-static NSString *WGGGuessUsername(id sess) {
-    if (!sess) return nil;
-    Class c = [sess class];
-    NSArray *names = @[@"_userName", @"m_nsUserName", @"m_nsUsrName",
-                        @"userName", @"m_nsFromUsrName", @"m_nsTalker"];
-    for (NSString *n in names) {
-        Ivar iv = class_getInstanceVariable(c, n.UTF8String);
-        if (iv) {
-            const char *t = ivar_getTypeEncoding(iv);
-            if (!t || t[0] != '@') continue;   // 非对象类型不碰
-            id v = object_getIvar(sess, iv);
-            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) {
-                return v;
-            }
-        }
-    }
-    return nil;
-}
-
-/// 合并 front 数组 + 逻辑层枚举结果（按用户名去重，front 优先）。
-/// 返回自动释放数组；读不出用户名的逻辑层对象跳过（避免 "?" 垃圾行）。
-static NSArray *WGGMergeWithLogicSessions(NSArray *front, id vc) {
-    // 拿逻辑层 + 就绪判断（和枚举同一套守卫）
-    Ivar lv = class_getInstanceVariable([vc class], "m_mainFrameLogicController");
-    id logic = lv ? object_getIvar(vc, lv) : nil;
-    if (!logic) return front;
-
-    SEL selReady = NSSelectorFromString(@"hasLoadSessionData");
-    if ([logic respondsToSelector:selReady]) {
-        BOOL ready = ((BOOL (*)(id, SEL))objc_msgSend)(logic, selReady);
-        if (!ready) return front;   // 未就绪：只用 front，绝不碰分区接口
-    }
-
-    // ③ 缓存：front 数量没变且已有缓存 → 直接复用，不重调微信
-    if (!gLogicSessionsCache || gLogicFrontCount != front.count) {
-        NSArray *fresh = WGGEnumerateLogicSessions(logic);
-        if (fresh.count > 0) {
-            [gLogicSessionsCache release];
-            gLogicSessionsCache = [fresh retain];
-            gLogicFrontCount = front.count;
-        } else if (!gLogicSessionsCache) {
-            return front;   // 还没枚举到东西（未就绪/异常）→ 纯 front
-        }
-    }
-    NSArray *logicSessions = gLogicSessionsCache;
-    if (logicSessions.count == 0) return front;
-
-    // 校验：逻辑层对象的用户名必须读得出，否则别混进来（下轮适配字段）
-    NSString *probe = WGGGuessUsername(logicSessions[0]);
-    if (!probe) {
-        static BOOL gWarned = NO;
-        if (!gWarned) {
-            gWarned = YES;
-            WGGLogMessage([NSString stringWithFormat:
-                           @"逻辑层会话对象读不出用户名（类=%@），暂不并入——待字段适配",
-                           NSStringFromClass([logicSessions[0] class])]);
-        }
-        return front;
-    }
-
-    NSMutableSet *seen = [[NSMutableSet alloc] init];
-    NSMutableArray *merged = [NSMutableArray array];
-    for (id c in front) {
-        NSString *k = WGGGuessUsername(c);
-        if (k) [seen addObject:k];
-        [merged addObject:c];
-    }
-    NSUInteger added = 0;
-    for (id s in logicSessions) {
-        NSString *k = WGGGuessUsername(s);
-        if (!k || [seen containsObject:k]) continue;
-        [seen addObject:k];
-        [merged addObject:s];
-        added++;
-    }
-    [seen release];
-
-    static BOOL gLogged = NO;
-    if (!gLogged) {
-        gLogged = YES;
-        WGGLogMessage([NSString stringWithFormat:
-                       @"逻辑层会话并入：front=%lu + 逻辑层补=%lu → 共 %lu",
-                       (unsigned long)front.count, added, (unsigned long)merged.count]);
-    }
-    return merged;
-}
-
 #pragma mark - 对外接口
 
 @implementation WGGConversationSource
@@ -320,9 +175,11 @@ static NSArray *WGGMergeWithLogicSessions(NSArray *front, id vc) {
         gOwnerClassName = [[NSString alloc] initWithString:NSStringFromClass([vc class])];
     }
 
-    // 4) 并入逻辑层全量枚举（折叠/置顶区的会话不在 front 数组里——
-    //    【用户实测】好友数量对不上就是这个原因）
-    return WGGMergeWithLogicSessions(front, vc);
+    // 【0.3.7 实锤移除】逻辑层分区接口的索引参数是微信私有类（NSIndexPath
+    // 传进去直接内存崩，@try 拦不住）——枚举方案废弃。
+    // 全量对账改走"原生分区行数快照 + 置顶/折叠对账行"（见 QQList），
+    // 真正把折叠区收编成行，等索引类/折叠栏的转储结果。
+    return front;
 }
 
 + (BOOL)isSearchingViewController:(id)vc {

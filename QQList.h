@@ -55,6 +55,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// 底部「⚙ 会话分组设置」行的玻璃 cell。
 + (UITableViewCell *)settingsCellForTable:(UITableView *)tableView;
 
+/// 记录微信原生分区行数（Tweak 的 numberOfRows 里用 %orig 喂进来，对账用）。
++ (void)noteNativeRows:(NSUInteger)rows forSection:(NSInteger)section;
+/// 微信原生列表总行数（各分区求和）。
++ (NSUInteger)nativeTotalRows;
+
 /// 折叠/展开某分组（持久化），调用后请 reloadData。
 + (void)toggleGroupAtRow:(NSInteger)row;
 /// 折叠/展开（直接给组名）。

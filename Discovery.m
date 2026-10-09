@@ -353,6 +353,21 @@ static void WGGSafeDumpMethods(Class cls, NSString *tag, NSArray<NSString *> *ke
     free(methods);
 }
 
+/// 只转储成员变量名+类型（绝不读值——零崩溃风险），给下一轮字段适配用。
+static void WGGDumpIvarNames(Class cls, NSString *tag) {
+    if (!cls) return;
+    unsigned int count = 0;
+    Ivar *ivars = class_copyIvarList(cls, &count);
+    WGGLog(@"成员清单 [%@] %s（%u 个）", tag, class_getName(cls), count);
+    unsigned int shown = count < 80 ? count : 80;
+    for (unsigned int i = 0; i < shown; i++) {
+        WGGLog(@"   %s (%s)",
+               ivar_getName(ivars[i]) ?: "?",
+               ivar_getTypeEncoding(ivars[i]) ?: "?");
+    }
+    if (ivars) free(ivars);
+}
+
 void WGGProbeConversations(void) {
     @autoreleasepool {
         UITableView *table = WGGFindLargestTableView();
@@ -510,6 +525,25 @@ void WGGProbeConversations(void) {
         WGGSafeDumpMethods(NSClassFromString(@"MainFrameCellDataManager"),
                            @"MainFrameCellDataManager",
                            @[ @"session", @"chat", @"click", @"open", @"select" ]);
+
+        // 【转储】微信自己的索引对象——枚举全量会话的钥匙（0.3.6 实锤：
+        // NSIndexPath 传进它的分区接口直接内存崩，它的索引是私有类）。
+        // 看它是什么类、有哪些构造方法，下一轮用它安全枚举。
+        SEL selFirst = NSSelectorFromString(@"firstSessionIndexPath");
+        if ([ds respondsToSelector:selFirst]) {
+            id ip = ((id (*)(id, SEL))objc_msgSend)(ds, selFirst);
+            if (ip) {
+                WGGLog(@"索引对象：类=%@ 描述=%@", NSStringFromClass([ip class]), ip);
+                WGGDumpIvarNames([ip class], @"索引类");
+                WGGSafeDumpMethods([ip class], @"索引类",
+                                   @[ @"init", @"row", @"section", @"index", @"copy" ]);
+            }
+        }
+        // 【转储】折叠栏 + 原生会话 cell 的成员——置顶/折叠会话的藏身处
+        WGGDumpIvarNames(NSClassFromString(@"MainFrameSectionFoldView"), @"折叠栏");
+        WGGSafeDumpMethods(NSClassFromString(@"MainFrameSectionFoldView"), @"折叠栏",
+                           @[ @"session", @"fold", @"data", @"user", @"reload", @"config" ]);
+        WGGDumpIvarNames(NSClassFromString(@"NewMainFrameCell"), @"原生会话cell");
     }
 }
 

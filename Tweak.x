@@ -636,6 +636,10 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     BOOL group = [WGGQQList shouldGroupTable:tableView ofVC:self];
     if (group) {
+        // 先记录微信自己的真实行数（对账用：置顶/折叠区不在我们的数据源里，
+        // 但行数差多少必须让用户看得见）。%orig 零风险——微信问它自己。
+        NSInteger native = %orig;
+        [WGGQQList noteNativeRows:(native > 0 ? (NSUInteger)native : 0) forSection:section];
         if (section == 0) return (NSInteger)[WGGQQList virtualRowsForVC:self].count;
         return 0;
     }
@@ -811,7 +815,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.3.6 loaded（枚举就绪守卫+缓存 + 设置行 + 微信原生开聊天）");
+        WGGLogMessage(@"WeChatGlassGroups v0.3.7 loaded（移除危险枚举 + 对账行 + 结构转储）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

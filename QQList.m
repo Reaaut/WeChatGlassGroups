@@ -232,6 +232,10 @@ static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（仅
 static NSString *gLastToggleGroup = nil;          // 防抖：同组最近一次切换（+1）
 static NSTimeInterval gLastToggleTime = 0.0;
 
+/// 微信原生分区行数快照（numberOfRows 里 %orig 的真实值，Tweak 负责喂）。
+/// 置顶/折叠区的会话不在 front 数组里，但对账必须算上它们。
+static NSUInteger gNativeRows[8] = {0};
+
 @implementation WGGQQList
 
 + (BOOL)shouldGroupTable:(UITableView *)tableView ofVC:(id)vc {
@@ -279,6 +283,28 @@ static NSTimeInterval gLastToggleTime = 0.0;
         }
     }
 
+    // 对账行：微信原生列表（含置顶/折叠区）的行数比收编的会话多，
+    // 把差额亮出来——用户一眼看到"还有 N 条没进分组"。真正的收编等
+    // 索引类/折叠栏转储出来后下一轮做。
+    NSUInteger nativeTotal = [self nativeTotalRows];
+    if (nativeTotal > convs.count) {
+        NSUInteger missing = nativeTotal - convs.count;
+        WGGVirtualRow *ph = [WGGVirtualRow headerRowWithGroupName:@"📌 微信置顶/折叠"
+                                                            count:missing
+                                                        collapsed:NO];
+        [rows addObject:ph];
+        [ph release];
+        static NSUInteger gLastMissing = NSUIntegerMax;
+        if (gLastMissing != missing) {
+            gLastMissing = missing;
+            WGGLogMessage([NSString stringWithFormat:
+                           @"对账：微信原生总行数=%lu 插件收编=%lu 置顶/折叠未收编=%lu",
+                           (unsigned long)nativeTotal,
+                           (unsigned long)convs.count,
+                           (unsigned long)missing]);
+        }
+    }
+
     // 底部固定一行「⚙ 会话分组设置」——设置页胶囊被微信 footer 坑了点不动，
     // 这行走的是和分组表头完全相同的点击路径（已验证可靠），永远可达。
     WGGVirtualRow *sr = [WGGVirtualRow settingsRow];
@@ -286,6 +312,19 @@ static NSTimeInterval gLastToggleTime = 0.0;
     [sr release];
 
     return rows;
+}
+
+/// 记录微信原生分区行数（Tweak 的 numberOfRows 里调，喂的是 %orig 真值）。
++ (void)noteNativeRows:(NSUInteger)rows forSection:(NSInteger)section {
+    if (section < 0 || section >= 8) return;
+    gNativeRows[section] = rows;
+}
+
+/// 微信原生列表总行数（各分区求和）。
++ (NSUInteger)nativeTotalRows {
+    NSUInteger t = 0;
+    for (int i = 0; i < 8; i++) t += gNativeRows[i];
+    return t;
 }
 
 + (CGFloat)headerHeight {
