@@ -277,7 +277,7 @@ typedef NS_ENUM(NSInteger, WGGSettingTag) {
     sv.spacing = 10.0;
     sv.translatesAutoresizingMaskIntoConstraints = NO;
     sv.layoutMargins = UIEdgeInsetsMake(kCardPaddingV, kCardPaddingH, kCardPaddingV, kCardPaddingH);
-    sv.isLayoutMarginsRelativeArrangement = YES;
+    sv.layoutMarginsRelativeArrangement = YES;   // 注意：没有 is 前缀（那是 Swift 叫法）
     return [sv autorelease];
 }
 
