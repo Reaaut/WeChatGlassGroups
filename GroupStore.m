@@ -748,7 +748,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
             NSString *key = [WGGGroupStore keyForConversation:conv];
             if (key.length == 0) continue;
             for (NSString *g in [self groupsForChatKey:key]) {
-                if (![buckets[g]]) {
+                if (buckets[g] == nil) {
                     buckets[g] = [NSMutableArray array];
                     [customOrder addObject:g];
                 }
