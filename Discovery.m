@@ -412,14 +412,21 @@ void WGGProbeConversations(void) {
         // 【分区探测】微信首页是多分区的（置顶/常规/折叠）。逐区问逻辑层要行数，
         // 每区取第一个会话"体检"——如果不是 FakeMainFrameCellData（字段已实锤），
         // 就转储它的成员变量，下一轮按真实字段适配读取链。
+        // ⚠️ 与 ConversationSource 同一套守卫：数据未就绪绝不调分区接口（闪退根源）。
         {
             Ivar lv = class_getInstanceVariable([ds class], "m_mainFrameLogicController");
             id logic = lv ? object_getIvar(ds, lv) : nil;
             if (logic) {
+                SEL selReady = NSSelectorFromString(@"hasLoadSessionData");
+                BOOL ready = YES;
+                if ([logic respondsToSelector:selReady]) {
+                    ready = ((BOOL (*)(id, SEL))objc_msgSend)(logic, selReady);
+                }
                 SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
                 SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
-                if ([logic respondsToSelector:selCnt] && [logic respondsToSelector:selAt]) {
+                if (ready && [logic respondsToSelector:selCnt] && [logic respondsToSelector:selAt]) {
                     WGGLog(@"分区探测：逻辑层=%@", NSStringFromClass([logic class]));
+                    @try {
                     for (NSUInteger s = 0; s < 6; s++) {
                         NSInteger n = ((NSInteger (*)(id, SEL, NSUInteger))objc_msgSend)(logic, selCnt, s);
                         if (n <= 0) continue;
@@ -454,6 +461,9 @@ void WGGProbeConversations(void) {
                             WGGLog(@"   %s (%s) = %@", nn ? nn : "?", tt ? tt : "?", val);
                         }
                         if (ivs) free(ivs);
+                    }
+                    } @catch (NSException *e) {
+                        WGGLog(@"分区探测异常（跳过）：%@", e);
                     }
                 }
             }

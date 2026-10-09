@@ -811,7 +811,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.3.5 loaded（分组唯一列表 + 设置行 + 分区收编）");
+        WGGLogMessage(@"WeChatGlassGroups v0.3.6 loaded（枚举就绪守卫+缓存 + 设置行 + 微信原生开聊天）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
