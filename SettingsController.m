@@ -13,6 +13,7 @@
 #import "SettingsController.h"
 #import "GroupStore.h"
 #import "Logger.h"
+#import "Discovery.h"   // WGGLogMessage（落文件日志）
 
 NSArray<NSString *> *WGGArrowSymbolChoices(void) {
     static NSArray *choices;
