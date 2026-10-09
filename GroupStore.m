@@ -780,11 +780,12 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
             id conv = conversations[i];
             WGGAutoKind k = [WGGGroupStore autoKindForConversation:conv];
             NSString *bucket = nil;
-            if (k == WGGAutoKindFriend)       bucket = WGGGroupFriendsName;
-            else if (k == WGGAutoKindGroup)   bucket = WGGGroupGroupsName;
+            if (k == WGGAutoKindFriend)        bucket = WGGGroupFriendsName;
+            else if (k == WGGAutoKindGroup)    bucket = WGGGroupGroupsName;
             else if (k == WGGAutoKindOfficial) bucket = WGGGroupOfficialName;
+            else bucket = WGGGroupFriendsName;   // 系统/未知 → 归好友段兜底，绝不丢会话
 
-            if (bucket) [buckets[bucket] addObject:@(i)];
+            [buckets[bucket] addObject:@(i)];
 
             // 自定义分组：按归属表算（一个会话可进多个自定义分组）
             NSString *key = [WGGGroupStore keyForConversation:conv];

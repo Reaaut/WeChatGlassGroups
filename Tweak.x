@@ -35,6 +35,7 @@
 #import "GroupStore.h"
 #import "SettingsController.h"
 #import "Discovery.h"
+#import "QQList.h"
 
 // ===========================================================================
 // MARK: - 前置声明
@@ -443,64 +444,88 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
 %end
 
 // ===========================================================================
-// MARK: - 阶段二骨架：QQ 好友分组样式（拿到真实类名后再启用）
+// MARK: - 阶段二：QQ 好友分组列表（实装！）
 // ===========================================================================
 //
-// ⚠️⚠️ 这一段必须保持 // 注释状态，不能用 #if 包！⚠️⚠️
-//   Theos 的 Logos 预处理器不认 #if，它会照样生成 hook 代码，
-//   但方法体被剔除了 → 链接报 "function ... has internal linkage but is not defined"。
-//   这个坑已经踩过一次了。
+// 【日志实锤】table=MainFrameTableView，dataSource=delegate=NewMainFrameViewController
 //
-// 【需求】不要悬浮窗。把首页聊天列表直接改成 QQ 好友分组那种：
-//         好友 (12) ▾ / 群聊 (3) ▸ / 公众号 (2) ▸ —— 点表头折叠/展开。
+// 【做法】在微信的会话表里"插行"：
+//   · numberOfRows = 表头数 + 展开分组的会话数
+//   · cellForRow：表头行返回我们自己的玻璃 cell；会话行把行号映射回
+//     原始下标后 %orig 交给微信原生实现 —— 绝不修改微信数组
+//   · 表头行点击 → 折叠/展开（持久化）→ reloadData
+//   · 搜索态 / 总开关关 / 找不到数组 → 全部让路，微信行为 100% 原生
 //
-// 【实现思路】在微信的会话表里"插行"（QQ 式分组的经典做法）：
-//   1. 用 sectionsForConversations: 把原始会话数组切成若干段
-//   2. 构建"虚拟行表"virtualRows：
-//        [表头(好友)] + 好友的行(若展开) + [表头(群聊)] + 群聊的行(若展开) + ...
-//   3. numberOfRows = virtualRows.count（numberOfSections 不动！微信多半只有 1 段）
-//   4. cellForRow：virtualRows[row] 是表头 → 返回我们自己的玻璃表头 cell；
-//      是会话 → 用 indices 把行号映射回原始数组，再 %orig 交给微信原生实现
-//   5. 点表头 → toggleCollapsedForGroup: → [table reloadData]
-//   ⚠️ numberOfSections / didSelectRowAtIndexPath / 行高 全都不动，
-//      插入的表头行也走微信的行高，样式用玻璃圆角浮条区分。
-//
-// // 真机日志确认后填这三个真名：
-// static NSString * const kWGGDataSourceClass   = @"（日志里 dataSource= 后面的类名）";
-// static NSString * const kWGGConversationArray = @"（日志里 会话数组属性名 = 后面的名字）";
-//
-// %hook （真实数据源类名）
-//
-// // 1) 记录原始数组（只读快照，绝不修改微信的数组）
-// - (NSArray *)conversationArray {
-//     NSArray *raw = %orig;
-//     [gWGGRememberedConversations release];
-//     gWGGRememberedConversations = [raw copy];
-//     return raw;
-// }
-//
-// // 2) 行数 = 表头数 + 展开分组的会话数
-// - (NSInteger)tableView:(UITableView *)tv numberOfRowsInSection:(NSInteger)section {
-//     NSArray<WGGSection *> *secs = [[WGGGroupStore shared] sectionsForConversations:gWGGRememberedConversations];
-//     NSInteger rows = (NSInteger)secs.count;               // 每段一行表头
-//     for (WGGSection *s in secs) if (!s.collapsed) rows += (NSInteger)s.count;
-//     return rows;
-// }
-//
-// // 3) cell：表头行自己画；会话行映射回原始下标后 %orig
-// - (UITableViewCell *)tableView:(UITableView *)tv cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-//     WGGVirtualRow *v = WGGVirtualRowAt(indexPath.row);    // 由 sectionsForConversations 构建
-//     if (v.kind == WGGRowKindHeader) {
-//         return [WGGSectionHeaderCell cellForTable:tv section:v.section];  // 玻璃表头
-//     }
-//     NSIndexPath *mapped = [NSIndexPath indexPathForRow:v.originalIndex inSection:indexPath.section];
-//     return %orig(tv, mapped);
-// }
-//
-// %end
-//
-// 注意：这三个方法要钩在"真正给首页 table 供数的那个类"上。
-//       日志里「会话探测：table=... dataSource=...」会直接给出答案。
+%hook NewMainFrameViewController
+
+// 1) 行数 = 表头数 + 展开分组的会话数
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    if (section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return (NSInteger)[WGGQQList virtualRowsForVC:self].count;
+    }
+    return %orig;
+}
+
+// 2) cell：表头行自己画；会话行映射回原始下标后 %orig
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        NSArray *rows = [WGGQQList virtualRowsForVC:self];
+        if (indexPath.row < (NSInteger)rows.count) {
+            WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isHeader) {
+                UITableViewCell *c = [WGGQQList headerCellForTable:tableView virtualRow:v];
+                c.tag = indexPath.row;
+                return c;
+            }
+            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
+                                                     inSection:indexPath.section];
+            return %orig(tableView, mapped);
+        }
+    }
+    return %orig;
+}
+
+// 3) 行高：表头行固定（44 + 行间距设置）；会话行映射后问微信
+- (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        NSArray *rows = [WGGQQList virtualRowsForVC:self];
+        if (indexPath.row < (NSInteger)rows.count) {
+            WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isHeader) return [WGGQQList headerHeight];
+            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
+                                                     inSection:indexPath.section];
+            return %orig(tableView, mapped);
+        }
+    }
+    return %orig;
+}
+
+// 4) 点击：表头行 → 折叠/展开；会话行 → 映射后 %orig（正常进聊天）
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        NSArray *rows = [WGGQQList virtualRowsForVC:self];
+        if (indexPath.row < (NSInteger)rows.count) {
+            WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
+            if (v.isHeader) {
+                [WGGQQList toggleGroupNamed:v.groupName];
+                [tableView deselectRowAtIndexPath:indexPath animated:NO];
+                [tableView reloadData];
+                return;
+            }
+            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
+                                                     inSection:indexPath.section];
+            %orig(tableView, mapped);
+            return;
+        }
+    }
+    return %orig;
+}
+
+%end
+
+// ===========================================================================
+// MARK: - 入口
+// ===========================================================================
 
 // ===========================================================================
 // MARK: - 入口
