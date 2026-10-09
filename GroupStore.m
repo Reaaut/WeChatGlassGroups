@@ -660,7 +660,10 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
 }
 
 + (NSString *)displayNameForConversation:(id)conversation {
-    id v = WGGSafeValue(conversation, @[ @"nickName", @"m_nsNickName", @"displayName",
+    // 日志实锤（8.0.78 FakeMainFrameCellData 的 7 个 ivar）：
+    //   昵称真实字段 = _textForNameLabel（如 "小丸子"）
+    id v = WGGSafeValue(conversation, @[ @"_textForNameLabel", @"textForNameLabel",
+                                         @"nickName", @"m_nsNickName", @"displayName",
                                          @"title", @"name", @"m_nsRemark" ]);
     if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
     return nil;

@@ -355,7 +355,10 @@ static NSTimeInterval gLastToggleTime = 0.0;
 }
 
 + (NSString *)displayNameForConversation:(id)conversation {
+    // 日志实锤（8.0.78 FakeMainFrameCellData 只有 7 个 ivar）：
+    //   昵称 = _textForNameLabel（"小丸子"），带下划线！
     return WGGReadStr(conversation, @[
+        @"_textForNameLabel", @"textForNameLabel",
         @"m_nsTitle", @"title", @"m_nsNickName", @"nickName", @"m_strNickName",
         @"name", @"m_nsDisplayName", @"displayName", @"m_strName"]);
 }
@@ -558,6 +561,7 @@ static UIColor *WGGColorForName(NSString *name) {
     _avatar.backgroundColor = WGGColorForName(name.length ? name : @"会话");
 
     NSString *msg = WGGReadStr(conversation, @[
+        @"_textForMessageLabel", @"textForMessageLabel",
         @"m_nsMessage", @"message", @"m_strMessage", @"m_nsLastMsg", @"lastMessage", @"m_lastMsgText"]);
     if (!msg) {
         id wrap = WGGReadObj(conversation, @[
@@ -568,6 +572,7 @@ static UIColor *WGGColorForName(NSString *name) {
     _msgLabel.text = msg.length ? msg : @" ";
 
     NSString *time = WGGReadStr(conversation, @[
+        @"_textForTimeLabel", @"textForTimeLabel",
         @"m_timeString", @"m_nsTimeString", @"timeString", @"m_timeStr", @"timeText"]);
     if (!time) {
         NSNumber *ts = WGGReadNum(conversation, @[

@@ -323,6 +323,36 @@ static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
     return found;
 }
 
+// 【转储】把类里名字含关键词的方法列出来（只读，不改任何东西）。
+// 用途：会话行点击目前靠 %orig 映射，超出微信自己显示范围的索引会静默
+// 失效（用户点了没反应）。下一轮直接调用微信自己的"打开聊天"接口，
+// 真实方法名就由这份清单给出。
+static void WGGSafeDumpMethods(Class cls, NSString *tag, NSArray<NSString *> *keywords) {
+    if (!cls) return;
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    if (!methods) return;
+    WGGLog(@"方法清单 [%@] %s（%u 个方法，只列命中）", tag, class_getName(cls), count);
+    for (unsigned int i = 0; i < count; i++) {
+        SEL sel = method_getName(methods[i]);
+        const char *s = sel_getName(sel);
+        if (!s) continue;
+        NSString *name = [NSString stringWithUTF8String:s];
+        BOOL hit = NO;
+        for (NSString *kw in keywords) {
+            if ([name rangeOfString:kw options:NSCaseInsensitiveSearch].location != NSNotFound) {
+                hit = YES; break;
+            }
+        }
+        if (hit) {
+            char *types = method_copyReturnType(methods[i]);
+            WGGLog(@"   -[%@ %@] 返回=%s", tag, name, types ? types : @"?");
+            if (types) free(types);
+        }
+    }
+    free(methods);
+}
+
 void WGGProbeConversations(void) {
     @autoreleasepool {
         UITableView *table = WGGFindLargestTableView();
@@ -409,6 +439,17 @@ void WGGProbeConversations(void) {
             }
             free(ivars);
         }
+
+        // 【转储】"打开聊天"候选方法（会话行点击修复的下一步依据）
+        WGGSafeDumpMethods(NSClassFromString(@"NewMainFrameViewController"),
+                           @"NewMainFrameViewController",
+                           @[ @"session", @"chat", @"click", @"open", @"select", @"enter", @"push", @"tap" ]);
+        WGGSafeDumpMethods(NSClassFromString(@"MainFrameLogicController"),
+                           @"MainFrameLogicController",
+                           @[ @"session", @"chat", @"click", @"open", @"select", @"enter", @"push" ]);
+        WGGSafeDumpMethods(NSClassFromString(@"MainFrameCellDataManager"),
+                           @"MainFrameCellDataManager",
+                           @[ @"session", @"chat", @"click", @"open", @"select" ]);
     }
 }
 

@@ -418,21 +418,44 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 }
 
 - (void)entryTapped:(UIControl *)sender {
-    // 从 keyWindow 找最顶层的控制器
-    UIViewController *top = nil;
-    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *w in [(UIWindowScene *)scene windows]) {
-            if (!w.isKeyWindow) continue;
-            top = w.rootViewController;
-            while (top.presentedViewController) top = top.presentedViewController;
-        }
+    WGGLogMessage(@"设置入口：被点击");
+    UIViewController *vc = nil;
+
+    // ① 优先走响应链：入口胶囊长在设置页的 tableFooterView 里，
+    //    nextResponder 一路向上就是设置页控制器，自带导航栈，直接 push 最稳。
+    UIResponder *r = sender;
+    while (r) {
+        if ([r isKindOfClass:[UIViewController class]]) { vc = (UIViewController *)r; break; }
+        r = [r nextResponder];
     }
-    if (!top) {
-        WGGLogMessage(@"设置入口：找不到顶层控制器，弹不出设置页");
+    if (vc) {
+        WGGLogMessage([NSString stringWithFormat:@"设置入口：响应链找到 vc=%@，准备 push",
+                       NSStringFromClass([vc class])]);
+        WGGPushSettingsFrom(vc);
         return;
     }
-    WGGPushSettingsFrom(top);
+
+    // ② 兜底：keyWindow 顶层（presented 链走到头）
+    UIWindow *key = [UIApplication sharedApplication].keyWindow;
+    if (!key) {
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            for (UIWindow *w in [(UIWindowScene *)scene windows]) {
+                if (w.isKeyWindow) { key = w; break; }
+            }
+            if (key) break;
+        }
+    }
+    UIViewController *top = key ? key.rootViewController : nil;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (top) {
+        WGGLogMessage([NSString stringWithFormat:@"设置入口：keyWindow 兜底 vc=%@",
+                       NSStringFromClass([top class])]);
+        WGGPushSettingsFrom(top);
+        return;
+    }
+
+    WGGLogMessage(@"设置入口：找不到控制器，弹不出设置页");
 }
 
 @end
@@ -565,6 +588,8 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
             }
             NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
                                                      inSection:indexPath.section];
+            WGGLogMessage([NSString stringWithFormat:@"点会话 虚拟行=%ld 原索引=%lu",
+                           (long)indexPath.row, (unsigned long)v.originalIndex]);
             %orig(tableView, mapped);
             return;
         }
