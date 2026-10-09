@@ -346,7 +346,7 @@ static void WGGSafeDumpMethods(Class cls, NSString *tag, NSArray<NSString *> *ke
         }
         if (hit) {
             char *types = method_copyReturnType(methods[i]);
-            WGGLog(@"   -[%@ %@] 返回=%s", tag, name, types ? types : @"?");
+            WGGLog(@"   -[%@ %@] 返回=%s", tag, name, types ? types : "?");
             if (types) free(types);
         }
     }
