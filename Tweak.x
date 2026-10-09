@@ -50,7 +50,7 @@ static void WGGInstallDrawerIfNeeded(UIViewController *vc);
 static void WGGApplyStoreConfigToPanel(GlassGroupPanel *panel);
 static void WGGProbeOnceIfPossible(UIViewController *vc);
 static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc);
-static void WGGPushSettingsFrom(UIViewController *vc);
+static void WGGPushSettingsFrom(id vcObj);
 static UIView *WGGMakeSettingsEntryRow(void);
 
 /// 入口行的点击处理：得从"当前显示中的控制器"往上推设置页。
