@@ -550,7 +550,7 @@ static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
         if (iv) object_setIvar(chat, iv, [(nick ?: @"") retain]);
     }
 
-    UINavigationController *nav = fromVC.navigationController;
+    UINavigationController *nav = ((UIViewController *)fromVC).navigationController;
     if (nav) {
         [nav pushViewController:chat animated:YES];
     }
