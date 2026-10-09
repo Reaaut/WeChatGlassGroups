@@ -191,6 +191,90 @@ static UITableView *WGGFindLargestTableView(void) {
     return best;
 }
 
+/// 【安全探测】扫描对象的成员变量表（含父类，最多 3 层）：
+///   * 所有非 nil 的对象 ivar → 打印 名字/类型/实际类（内存地图）
+///   * 其中的 NSArray ivar → 打印 count 和首元素类
+///   * 首元素是业务类（非 NS/UI 开头）的数组 → 记为候选
+/// 返回元素最多的候选数组，outName 带回它的 ivar 名。
+/// 只读 object_getIvar，不触发任何微信方法，绝无 KVC 副作用。
+static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
+    if (outName) *outName = nil;
+    Class c = [ds class];
+    WGGLog(@"---- 成员变量扫描（%@ 及父类，最多 3 层，只列非空对象）----", NSStringFromClass(c));
+
+    NSMutableArray *candNames = [NSMutableArray array];   // 候选数组的 ivar 名
+    NSMutableArray *candArrays = [NSMutableArray array];  // 候选数组的值
+    int depth = 0;
+    while (c && depth < 3) {
+        unsigned int count = 0;
+        Ivar *ivars = class_copyIvarList(c, &count);
+        for (unsigned int i = 0; i < count; i++) {
+            const char *tEnc = ivar_getTypeEncoding(ivars[i]);
+            const char *nEnc = ivar_getName(ivars[i]);
+            if (!tEnc || tEnc[0] != '@' || !nEnc) continue;   // 只关心对象类型
+            NSString *name = [NSString stringWithUTF8String:nEnc];
+            id val = object_getIvar(ds, ivars[i]);            // 原始读取，零副作用
+            if (!val) continue;
+
+            // 系统基础容器/字符串等排除（不会是会话数组）
+            BOOL blocked = [val isKindOfClass:[NSString class]] ||
+                           [val isKindOfClass:[NSDictionary class]] ||
+                           [val isKindOfClass:[NSNumber class]] ||
+                           [val isKindOfClass:[NSSet class]] ||
+                           [val isKindOfClass:[NSDate class]] ||
+                           [val isKindOfClass:[NSData class]] ||
+                           [val isKindOfClass:[NSValue class]];
+            if (blocked) continue;
+
+            if ([val isKindOfClass:[NSArray class]]) {
+                NSUInteger n = [(NSArray *)val count];
+                id first = n > 0 ? [(NSArray *)val firstObject] : nil;
+                NSString *fc = first ? NSStringFromClass([first class]) : @"(空)";
+                BOOL systemish = [fc hasPrefix:@"NS"] || [fc hasPrefix:@"__"] ||
+                                 [fc hasPrefix:@"UI"] || [fc hasPrefix:@"WK"];
+                WGGLog(@"  ⭐ ivar %@ = NSArray count=%lu 首元素=%@%@",
+                       name, (unsigned long)n, fc, systemish ? @"（系统类，跳过）" : @"");
+                if (n > 0 && !systemish) {
+                    [candNames addObject:name];
+                    [candArrays addObject:val];
+                }
+            } else {
+                WGGLog(@"  ivar %@ = %@", name, NSStringFromClass([val class]));
+            }
+        }
+        free(ivars);
+        c = class_getSuperclass(c);
+        depth++;
+    }
+
+    // 属性表（类自身的 @property 声明，补全信息）
+    unsigned int pcount = 0;
+    objc_property_t *props = class_copyPropertyList([ds class], &pcount);
+    if (pcount > 0) {
+        WGGLog(@"---- 属性表（共 %u 条，只列名字）----", pcount);
+        NSMutableString *names = [NSMutableString string];
+        for (unsigned int i = 0; i < pcount; i++) {
+            [names appendFormat:@"%@  ", @(property_getName(props[i]))];
+            if ((i + 1) % 6 == 0) { WGGLog(@"  %@", names); [names setString:@""]; }
+        }
+        if (names.length) WGGLog(@"  %@", names);
+    }
+    free(props);
+
+    if (candArrays.count == 0) {
+        WGGLog(@"会话探测：没扫到有内容的业务数组 —— 请把上面【成员变量扫描】整段发回来");
+        return nil;
+    }
+    NSUInteger best = 0;
+    for (NSUInteger i = 1; i < candArrays.count; i++) {
+        if ([(NSArray *)candArrays[i] count] > [(NSArray *)candArrays[best] count]) best = i;
+    }
+    if (outName) *outName = candNames[best];
+    WGGLog(@"会话探测：⭐ 选定数组 ivar = %@（元素最多，count=%lu）",
+           candNames[best], (unsigned long)[(NSArray *)candArrays[best] count]);
+    return candArrays[best];
+}
+
 void WGGProbeConversations(void) {
     @autoreleasepool {
         UITableView *table = WGGFindLargestTableView();
@@ -208,37 +292,12 @@ void WGGProbeConversations(void) {
                table.delegate ? NSStringFromClass([table.delegate class]) : @"(nil)");
         if (!ds) return;
 
-        // 挨个试候选属性名。命中哪个就把名字打出来 —— 阶段二直接用它。
-        NSArray<NSString *> *candidates = @[
-            @"conversationArray", @"m_arrConversation", @"arrConversation",
-            @"sessions", @"m_arrSession", @"m_arrSessions",
-            @"dataArray", @"m_arrData", @"items", @"listArray"
-        ];
-        NSArray *found = nil;
+        // 【安全探测】扫描 dataSource 的成员变量表，把"有内容的业务数组"找出来。
+        // 之前用 valueForKey: 乱试候选名，在微信对象上触发 KVC 兜底逻辑，
+        // 不但没找到数组，还把进程内存搞脏了（我们的分组名一度变成微信请求头）。
         NSString *foundName = nil;
-        for (NSString *n in candidates) {
-            if (![ds respondsToSelector:NSSelectorFromString(n)]) continue;
-            @try {
-                id v = [ds valueForKey:n];
-                if ([v isKindOfClass:[NSArray class]] && [(NSArray *)v count] > 0) {
-                    found = (NSArray *)v;
-                    foundName = n;
-                    break;
-                }
-            } @catch (NSException *e) {
-                // 某些 key 会抛异常，忽略
-            }
-        }
-
-        if (!found) {
-            WGGLog(@"会话探测：⭐ 候选属性名全部没命中。");
-            WGGLog(@"          说明会话数组在别的类/别的名字上 —— 请把上面 dataSource 的类名报回来，");
-            WGGLog(@"          下一步用 WGGDumpClassInfo 去 dump 那个类。");
-            return;
-        }
-
-        WGGLog(@"会话探测：⭐ 会话数组属性名 = %@（共 %lu 条）—— 阶段二就用它",
-               foundName, (unsigned long)found.count);
+        NSArray *found = WGGSafeFindConversationArray(ds, &foundName);
+        if (!found) return;   // 没找到：dump 信息已打在日志里，等用户发回来
 
         // 逐条打印标识 + 自动归类结果，直接验证"好友/群聊"判断是否成立
         NSUInteger limit = found.count < 15 ? found.count : 15;

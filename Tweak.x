@@ -393,11 +393,26 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 // ===========================================================================
 // MARK: - 通用钩子（只有两个，都刻意保持"只读观察 + 防重复"）
 // ===========================================================================
+// 记录出现过的页面类名（最多 30 个，去重）。
+// 用途：日志里"设置入口已注入"一直没出现，说明微信真正的设置页类名
+// 没有被关键词匹配到 —— 用户打开 微信→设置 一次，真名就会出现在这里。
+static NSMutableSet *gWGGSeenVCClasses = nil;
+
 %hook UIViewController
 
 - (void)viewDidAppear:(BOOL)animated {
     %orig;
     @autoreleasepool {
+        // 页面类名记录（一次性去重，只记前 30 个）
+        if (!gWGGSeenVCClasses) gWGGSeenVCClasses = [[NSMutableSet alloc] init];
+        NSString *cls = NSStringFromClass([self class]);
+        @synchronized (gWGGSeenVCClasses) {
+            if (![gWGGSeenVCClasses containsObject:cls] && gWGGSeenVCClasses.count < 30) {
+                [gWGGSeenVCClasses addObject:cls];
+                WGGLogMessage([NSString stringWithFormat:@"页面出现：%@", cls]);
+            }
+        }
+
         WGGProbeOnceIfPossible(self);          // 阶段一：拿真名 + 验证归类
         WGGInstallDrawerIfNeeded(self);        // 首页：挂抽屉
         WGGInstallSettingsEntryIfNeeded(self); // 设置页：注入插件入口

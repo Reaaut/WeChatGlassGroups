@@ -10,6 +10,8 @@
 //
 
 #import "GroupStore.h"
+#import <objc/runtime.h>
+#import <objc/message.h>
 #import "Discovery.h"
 
 NSString *const WGGGroupAllName      = @"全部";
@@ -53,7 +55,7 @@ static NSString * const kSetVerbose       = @"verboseLogging";
 
 static const CGFloat kDefaultGlassAlpha   = 0.95;
 static const CGFloat kDefaultDrawerWidth  = 268.0;
-static const CGFloat kDefaultRowSpacing   = 8.0;
+static const CGFloat kDefaultRowSpacing   = 14.0;   // 用户反馈：间距要调开一点
 static NSString * const kDefaultArrowSymbol = @"chevron.right";
 
 // 前向声明（定义在文件后面）
@@ -68,9 +70,10 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
                             active:(BOOL)active {
     WGGFilterResult *r = [[WGGFilterResult alloc] init];
     if (r) {
-        // copy 返回 +1，直接给 readonly ivar 正好；dealloc 负责 release
-        r->_filtered = filtered ? [filtered copy] : (NSArray *)@[];
-        r->_indices  = indices  ? [indices copy]  : (NSArray<NSNumber *> *)@[];
+        // copy / alloc 都返回 +1，直接给 readonly ivar 正好；dealloc 负责 release
+        // ⚠️ 不能用 @[]：字面量是 +0（自动释放），存进会被 release 的 ivar = 过度释放
+        r->_filtered = filtered ? [filtered copy] : [[NSArray alloc] init];
+        r->_indices  = indices  ? [indices copy]  : [[NSArray alloc] init];
         r->_active   = active;
     }
     return [r autorelease];
@@ -339,7 +342,12 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
 - (NSArray<NSString *> *)allGroupNames {
     NSMutableArray *out = [NSMutableArray arrayWithArray:WGGAutoGroupNames()];
     @synchronized (self) {
-        [out addObjectsFromArray:_customGroups];
+        for (NSString *n in _customGroups) {
+            // 防御性过滤：内存万一被搞脏（如被微信请求头串顶掉），这里兜底
+            if (![n isKindOfClass:[NSString class]]) continue;
+            if (n.length == 0 || n.length > 24) continue;
+            [out addObject:n];
+        }
     }
     return out;
 }
@@ -579,18 +587,44 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
     if (changed) [self scheduleSave];
 }
 
-#pragma mark - 从微信对象取值（KVC + 保护）
+#pragma mark - 从微信对象取值（原始 ivar 读取 + 保护）
 
+/// 从对象里安全取值：**先查成员变量表做原始读取（零副作用）**，
+/// 实在没有才调同名只读方法。
+///
+/// ⚠️ 刻意不再用 valueForKey:：KVC 在微信对象上会走兜底逻辑
+///    （抛 NSUndefinedKeyException、触发懒加载），实测会把进程内存搞脏 ——
+///    我们的分组名一度被微信的请求头串（uin/exportKey/wx_header）顶掉。
 static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
     if (!obj) return nil;
     for (NSString *k in keys) {
-        @try {
-            if ([obj respondsToSelector:NSSelectorFromString(k)]) {
-                id v = [obj valueForKey:k];
-                if (v && ![v isKindOfClass:[NSNull class]]) return v;
+        if (k.length == 0) continue;
+
+        // 1) 成员变量：先 _xxx 再 xxx，直接原始读取（不触发任何方法）
+        for (Class c = [obj class]; c; c = class_getSuperclass(c)) {
+            Ivar iv = class_getInstanceVariable(c, [@"_" stringByAppendingString:k].UTF8String);
+            if (!iv) iv = class_getInstanceVariable(c, k.UTF8String);
+            if (iv) {
+                const char *t = ivar_getTypeEncoding(iv);
+                if (t && t[0] == '@') {                       // 只处理对象类型
+                    id v = object_getIvar(obj, iv);
+                    if (v && ![v isKindOfClass:[NSNull class]]) {
+                        return [[v retain] autorelease];      // MRC：按方法约定返回 +0
+                    }
+                }
+                break;   // 这一层有同名 ivar 就别再翻父类
             }
-        } @catch (NSException *e) {
-            // 微信对象对某些 key 会抛异常，忽略继续试下一个
+        }
+
+        // 2) 同名只读方法（仍然有防护：先 respondsToSelector，再 @try）
+        SEL sel = NSSelectorFromString(k);
+        if ([obj respondsToSelector:sel]) {
+            @try {
+                id v = ((id (*)(id, SEL))objc_msgSend)(obj, sel);
+                if (v && ![v isKindOfClass:[NSNull class]]) return v;
+            } @catch (NSException *e) {
+                // 忽略，继续下一个候选名
+            }
         }
     }
     return nil;
