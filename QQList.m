@@ -19,6 +19,11 @@
 
 static NSString *const kWGGConversationReuseID = @"WGGConversationCell";
 
+// 安全读取器原型（定义在文件后部，WGGQQList 先要用，必须先声明）
+static NSString *WGGReadStr(id obj, NSArray<NSString *> *keys);
+static id WGGReadObj(id obj, NSArray<NSString *> *keys);
+static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys);
+
 /// 自绘会话行：玻璃胶囊 + 圆形首字头像 + 名字/最后消息/时间/未读红点。
 @interface WGGConversationCell : UITableViewCell {
     UIView *_capsule;
