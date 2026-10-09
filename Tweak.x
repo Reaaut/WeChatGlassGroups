@@ -261,6 +261,11 @@ static void WGGInstallDrawerIfNeeded(UIViewController *vc) {
 /// 模态 FormSheet 走标准 UIKit，微信自己也这么用，最稳。
 static void WGGPushSettingsFrom(UIViewController *vc) {
     if (!vc) return;
+    // 已在展示设置页就不再弹（手势+控件双路径的保险）
+    if ([vc.presentedViewController isKindOfClass:[WGGSettingsController class]]) {
+        WGGLogMessage(@"设置页：已在展示，忽略重复点击");
+        return;
+    }
     WGGLogMessage([NSString stringWithFormat:@"设置页：准备从 %@ 模态弹出", NSStringFromClass([vc class])]);
     WGGSettingsController *settings = [[[WGGSettingsController alloc] init] autorelease];
     settings.modalPresentationStyle = UIModalPresentationFormSheet;
@@ -344,6 +349,17 @@ static UIView *WGGMakeSettingsEntryRow(void) {
             action:@selector(entryTapped:)
   forControlEvents:UIControlEventTouchUpInside];
     [container addSubview:pill];
+
+    // 手势兜底：UIVisualEffectView 的 contentView 命中测试有怪癖，
+    // 触摸可能到不了 UIControl 的 touchUpInside（实测"点了没反应"）。
+    // 手势挂在 pill 上，命中测试穿透所有子视图，必触发。
+    // gesture 默认 cancelsTouchesInView 会取消控件的触摸，
+    // 所以控件事件和手势不会双触发。
+    UITapGestureRecognizer *tapGR = [[UITapGestureRecognizer alloc]
+                                     initWithTarget:[WGGSettingsEntryHandler sharedHandler]
+                                     action:@selector(entryTapped:)];
+    [pill addGestureRecognizer:tapGR];
+    [tapGR release];
 
     UIVisualEffectView *blur = [[UIVisualEffectView alloc]
                                 initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
@@ -472,6 +488,34 @@ static UIView *WGGMakeSettingsEntryRow(void) {
 // 没有被关键词匹配到 —— 用户打开 微信→设置 一次，真名就会出现在这里。
 static NSMutableSet *gWGGSeenVCClasses = nil;
 
+/// 藏掉微信自己的置顶折叠栏（topSessionFoldView）。
+/// 【用户反馈】"官方一个信息，你插件一条信息" —— 置顶的聊天在微信的
+/// 折叠栏显示一份，又在我们的分组里显示一份。分组列表就是唯一列表，
+/// 微信那个栏直接隐藏。
+static void WGGHideNativeFoldView(id vc) {
+    @autoreleasepool {
+        if (!vc) return;
+        UIView *fold = nil;
+        SEL selFold = NSSelectorFromString(@"topSessionFoldView");
+        if ([vc respondsToSelector:selFold]) {
+            fold = ((id (*)(id, SEL))objc_msgSend)(vc, selFold);
+        }
+        if (![fold isKindOfClass:[UIView class]]) {
+            // 属性拿不到就从 ivar 直接读（属性名和 ivar 名可能带/不带下划线）
+            Ivar iv = class_getInstanceVariable([vc class], "topSessionFoldView");
+            if (!iv) iv = class_getInstanceVariable([vc class], "_topSessionFoldView");
+            if (iv) fold = object_getIvar(vc, iv);
+        }
+        if ([fold isKindOfClass:[UIView class]] && !fold.isHidden) {
+            [fold setHidden:YES];
+            WGGLogMessage([NSString stringWithFormat:
+                           @"已隐藏微信置顶折叠栏 %@ frame=%@",
+                           NSStringFromClass([fold class]),
+                           NSStringFromCGRect(fold.frame)]);
+        }
+    }
+}
+
 %hook UIViewController
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -488,6 +532,10 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
         }
 
         WGGProbeOnceIfPossible(self);          // 阶段一：拿真名 + 验证归类
+        // 微信自己的置顶折叠栏藏掉（聊天全部只进分组，不再两处显示）
+        if ([cls isEqualToString:@"NewMainFrameViewController"]) {
+            WGGHideNativeFoldView(self);
+        }
         // ⚠️ 悬浮窗（抽屉）已按用户要求拆除 —— 设置入口只放微信自己的设置页
         WGGInstallSettingsEntryIfNeeded(self); // 设置页：注入插件入口
     }
@@ -506,6 +554,11 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
     UIView *entry = objc_getAssociatedObject(table, kWGGSettingsEntryKey);
     if (entry && table.tableFooterView != entry) {
         table.tableFooterView = entry;
+    }
+    // 微信 reload 时可能把置顶折叠栏重新显示出来 —— 顺手再藏一次
+    if ([NSStringFromClass([table class]) isEqualToString:@"MainFrameTableView"]) {
+        id ds = table.dataSource;
+        if (ds) WGGHideNativeFoldView(ds);
     }
 }
 
