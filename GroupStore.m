@@ -23,7 +23,12 @@ NSArray<NSString *> *WGGAutoGroupNames(void) {
     static NSArray *names;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        names = @[ WGGGroupFriendsName, WGGGroupGroupsName, WGGGroupOfficialName ];
+        // ⚠️ MRC 大坑：@[...] 字面量是"自动释放"对象（+0）。
+        //    之前直接存进 static 没 retain，%ctor 的内存池一排空它就被释放，
+        //    后续读到的是野内存 —— 抽屉分组名因此变成 uin/ellekit 等乱串。
+        //    alloc/init 返回 +1，静态持有正好，永驻。
+        names = [[NSArray alloc] initWithObjects:
+                 WGGGroupFriendsName, WGGGroupGroupsName, WGGGroupOfficialName, nil];
     });
     return names;
 }
@@ -637,8 +642,11 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
                                          @"identifier", @"m_nsSessionId" ]);
     if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
 
-    // 有些版本把标识藏在子对象里
-    id inner = WGGSafeValue(conversation, @[ @"contact", @"m_contact", @"sessionInfo" ]);
+    // 有些版本把标识藏在子对象里（cell 数据包装 / 消息体 / 会话体）
+    id inner = WGGSafeValue(conversation, @[ @"contact", @"m_contact", @"sessionInfo",
+                                             @"conversation", @"m_conversation",
+                                             @"msgWrap", @"m_msgWrap",
+                                             @"session", @"m_session" ]);
     if (inner && inner != conversation) {
         NSString *k = [self keyForConversation:inner];
         if (k.length > 0) return k;

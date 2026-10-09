@@ -266,11 +266,16 @@ static void WGGPushSettingsFrom(UIViewController *vc) {
     [vc presentViewController:settings animated:YES completion:nil];
 }
 
-/// 判断这个控制器像不像微信的「设置」页（只能按类名关键字猜，真名等日志确认）。
+/// 判断这个控制器像不像微信的「设置」页。
+/// ✅ 日志实锤（页面出现：MoreViewController）：微信 8.0.78 的「我→设置」首页
+///    类名是 MoreViewController —— 之前只匹配 "Setting" 所以永远进不去。
 static BOOL WGGLooksLikeSettingsController(UIViewController *vc) {
     NSString *cls = NSStringFromClass([vc class]);
     if (!cls) return NO;
-    if ([cls rangeOfString:@"Setting" options:NSCaseInsensitiveSearch].location == NSNotFound) return NO;
+    // 实名匹配 + 关键词兜底（防微信改版）
+    BOOL hit = [cls isEqualToString:@"MoreViewController"] ||
+               [cls rangeOfString:@"Setting" options:NSCaseInsensitiveSearch].location != NSNotFound;
+    if (!hit) return NO;
     // 排除我们自己的和明显不是"我→设置"的页面
     if ([cls hasPrefix:@"WGG"]) return NO;
     NSArray *bad = @[ @"Picker", @"Edit", @"Detail", @"Info", @"Cell", @"View" ];

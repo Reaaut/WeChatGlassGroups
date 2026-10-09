@@ -18,14 +18,15 @@ NSArray<NSString *> *WGGArrowSymbolChoices(void) {
     static NSArray *choices;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        choices = @[
-            @"chevron.right",       // ›   细箭头（默认）
-            @"chevron.forward",     // ›   同上（语义化名字）
-            @"arrow.right",         // →   平箭头
-            @"arrowtriangle.right.fill", // ▶ 实心三角
-            @"chevron.compact.right",    // ❯ 加粗紧凑
-            @"greaterthan",         // ＞  数学符号风
-        ];
+        // ⚠️ MRC：字面量是自动释放对象，存 static 必须 alloc/init（+1），理由同 GroupStore
+        choices = [[NSArray alloc] initWithObjects:
+                   @"chevron.right",             // ›   细箭头（默认）
+                   @"chevron.forward",           // ›   同上（语义化名字）
+                   @"arrow.right",               // →   平箭头
+                   @"arrowtriangle.right.fill",  // ▶ 实心三角
+                   @"chevron.compact.right",     // ❯ 加粗紧凑
+                   @"greaterthan",               // ＞  数学符号风
+                   nil];
     });
     return choices;
 }

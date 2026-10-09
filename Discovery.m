@@ -191,21 +191,26 @@ static UITableView *WGGFindLargestTableView(void) {
     return best;
 }
 
-/// 【安全探测】扫描对象的成员变量表（含父类，最多 3 层）：
-///   * 所有非 nil 的对象 ivar → 打印 名字/类型/实际类（内存地图）
-///   * 其中的 NSArray ivar → 打印 count 和首元素类
-///   * 首元素是业务类（非 NS/UI 开头）的数组 → 记为候选
-/// 返回元素最多的候选数组，outName 带回它的 ivar 名。
-/// 只读 object_getIvar，不触发任何微信方法，绝无 KVC 副作用。
-static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
-    if (outName) *outName = nil;
-    Class c = [ds class];
-    WGGLog(@"---- 成员变量扫描（%@ 及父类，最多 3 层，只列非空对象）----", NSStringFromClass(c));
+/// 递归扫描一个对象的成员变量表（含父类，最多 3 层），找"有内容的业务数组"。
+/// pathTag 是来源路径（如 vc.m_mainFrameLogicController），depth 0~2。
+/// 命中：outName = "路径.ivar名"，返回数组；没命中返回 nil（日志已打全成员地图）。
+/// ✅ 日志实锤：会话数组不在 NewMainFrameViewController 本体上，
+///    但 m_mainFrameLogicController = MainFrameLogicController —— 数据在逻辑层。
+static NSArray *WGGScanIvarsForArray(id obj, NSString *pathTag, int depth, NSString **outName) {
+    if (!obj || depth > 2) return nil;
+    Class origClass = [obj class];
+    Class c = origClass;
+    WGGLog(@"---- 成员变量扫描 [%@]（%@）----", pathTag, NSStringFromClass(c));
 
-    NSMutableArray *candNames = [NSMutableArray array];   // 候选数组的 ivar 名
+    NSMutableArray *candNames = [NSMutableArray array];   // 候选数组的路径名
     NSMutableArray *candArrays = [NSMutableArray array];  // 候选数组的值
-    int depth = 0;
-    while (c && depth < 3) {
+    NSMutableArray *hopNames = [NSMutableArray array];    // 值得深挖的子对象（高优先）
+    NSMutableArray *hopObjs = [NSMutableArray array];
+    NSMutableArray *hopLowNames = [NSMutableArray array]; // 低优先（防漏，放最后）
+    NSMutableArray *hopLowObjs = [NSMutableArray array];
+    int scanned = 0;
+
+    while (c && scanned < 3) {
         unsigned int count = 0;
         Ivar *ivars = class_copyIvarList(c, &count);
         for (unsigned int i = 0; i < count; i++) {
@@ -213,7 +218,7 @@ static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
             const char *nEnc = ivar_getName(ivars[i]);
             if (!tEnc || tEnc[0] != '@' || !nEnc) continue;   // 只关心对象类型
             NSString *name = [NSString stringWithUTF8String:nEnc];
-            id val = object_getIvar(ds, ivars[i]);            // 原始读取，零副作用
+            id val = object_getIvar(obj, ivars[i]);            // 原始读取，零副作用
             if (!val) continue;
 
             // 系统基础容器/字符串等排除（不会是会话数组）
@@ -232,47 +237,90 @@ static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
                 NSString *fc = first ? NSStringFromClass([first class]) : @"(空)";
                 BOOL systemish = [fc hasPrefix:@"NS"] || [fc hasPrefix:@"__"] ||
                                  [fc hasPrefix:@"UI"] || [fc hasPrefix:@"WK"];
-                WGGLog(@"  ⭐ ivar %@ = NSArray count=%lu 首元素=%@%@",
-                       name, (unsigned long)n, fc, systemish ? @"（系统类，跳过）" : @"");
+                WGGLog(@"  ⭐ %@.%@ = NSArray count=%lu 首元素=%@%@",
+                       pathTag, name, (unsigned long)n, fc,
+                       systemish ? @"（系统类，跳过）" : @"");
                 if (n > 0 && !systemish) {
-                    [candNames addObject:name];
+                    [candNames addObject:[NSString stringWithFormat:@"%@.%@", pathTag, name]];
                     [candArrays addObject:val];
                 }
-            } else {
-                WGGLog(@"  ivar %@ = %@", name, NSStringFromClass([val class]));
+                continue;
+            }
+
+            NSString *vcName = NSStringFromClass([val class]);
+            WGGLog(@"  ivar %@.%@ = %@", pathTag, name, vcName);
+
+            // 值得递归的子对象：逻辑/数据管理类（跳过视图和控制器本身）
+            BOOL isView = [val isKindOfClass:[UIView class]];
+            BOOL isVC   = [val isKindOfClass:[UIViewController class]];
+            if (!isView && !isVC) {
+                BOOL high = [vcName rangeOfString:@"LogicController"].location != NSNotFound ||
+                            [vcName rangeOfString:@"DataManager"].location != NSNotFound ||
+                            [vcName rangeOfString:@"CellData"].location != NSNotFound;
+                BOOL low  = [vcName rangeOfString:@"Logic"].location != NSNotFound ||
+                            [vcName rangeOfString:@"Manager"].location != NSNotFound ||
+                            [vcName rangeOfString:@"Store"].location != NSNotFound ||
+                            [vcName rangeOfString:@"Center"].location != NSNotFound;
+                if (high) {
+                    [hopNames addObject:[NSString stringWithFormat:@"%@.%@", pathTag, name]];
+                    [hopObjs addObject:val];
+                } else if (low && hopLowObjs.count < 2) {
+                    [hopLowNames addObject:[NSString stringWithFormat:@"%@.%@", pathTag, name]];
+                    [hopLowObjs addObject:val];
+                }
             }
         }
         free(ivars);
         c = class_getSuperclass(c);
-        depth++;
+        scanned++;
     }
 
-    // 属性表（类自身的 @property 声明，补全信息）
-    unsigned int pcount = 0;
-    objc_property_t *props = class_copyPropertyList([ds class], &pcount);
-    if (pcount > 0) {
-        WGGLog(@"---- 属性表（共 %u 条，只列名字）----", pcount);
-        NSMutableString *names = [NSMutableString string];
-        for (unsigned int i = 0; i < pcount; i++) {
-            [names appendFormat:@"%@  ", @(property_getName(props[i]))];
-            if ((i + 1) % 6 == 0) { WGGLog(@"  %@", names); [names setString:@""]; }
+    // 属性表只在第一层打（避免刷屏）
+    if (depth == 0) {
+        unsigned int pcount = 0;
+        objc_property_t *props = class_copyPropertyList(origClass, &pcount);
+        if (pcount > 0) {
+            WGGLog(@"---- 属性表（共 %u 条，只列名字）----", pcount);
+            NSMutableString *names = [NSMutableString string];
+            for (unsigned int i = 0; i < pcount; i++) {
+                [names appendFormat:@"%@  ", @(property_getName(props[i]))];
+                if ((i + 1) % 6 == 0) { WGGLog(@"  %@", names); [names setString:@""]; }
+            }
+            if (names.length) WGGLog(@"  %@", names);
         }
-        if (names.length) WGGLog(@"  %@", names);
+        free(props);
     }
-    free(props);
 
-    if (candArrays.count == 0) {
-        WGGLog(@"会话探测：没扫到有内容的业务数组 —— 请把上面【成员变量扫描】整段发回来");
-        return nil;
+    if (candArrays.count > 0) {
+        NSUInteger best = 0;
+        for (NSUInteger i = 1; i < candArrays.count; i++) {
+            if ([(NSArray *)candArrays[i] count] > [(NSArray *)candArrays[best] count]) best = i;
+        }
+        if (outName) *outName = candNames[best];
+        WGGLog(@"会话探测：⭐ 选定数组 %@（元素最多，count=%lu）",
+               candNames[best], (unsigned long)[(NSArray *)candArrays[best] count]);
+        return candArrays[best];
     }
-    NSUInteger best = 0;
-    for (NSUInteger i = 1; i < candArrays.count; i++) {
-        if ([(NSArray *)candArrays[i] count] > [(NSArray *)candArrays[best] count]) best = i;
+
+    // 本层没数组 → 深挖逻辑/数据管理对象（先高优先：LogicController/DataManager）
+    for (NSUInteger i = 0; i < hopObjs.count; i++) {
+        NSArray *deep = WGGScanIvarsForArray(hopObjs[i], hopNames[i], depth + 1, outName);
+        if (deep) return deep;
     }
-    if (outName) *outName = candNames[best];
-    WGGLog(@"会话探测：⭐ 选定数组 ivar = %@（元素最多，count=%lu）",
-           candNames[best], (unsigned long)[(NSArray *)candArrays[best] count]);
-    return candArrays[best];
+    for (NSUInteger i = 0; i < hopLowObjs.count; i++) {
+        NSArray *deep = WGGScanIvarsForArray(hopLowObjs[i], hopLowNames[i], depth + 1, outName);
+        if (deep) return deep;
+    }
+    return nil;
+}
+
+static NSArray *WGGSafeFindConversationArray(id ds, NSString **outName) {
+    if (outName) *outName = nil;
+    NSArray *found = WGGScanIvarsForArray(ds, @"vc", 0, outName);
+    if (!found) {
+        WGGLog(@"会话探测：vc 及其逻辑/数据子对象里都没扫到业务数组 —— 请把【成员变量扫描】整段发回来");
+    }
+    return found;
 }
 
 void WGGProbeConversations(void) {
