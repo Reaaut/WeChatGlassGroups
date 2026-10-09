@@ -55,6 +55,20 @@ NS_ASSUME_NONNULL_BEGIN
 /// 折叠/展开（直接给组名）。
 + (void)toggleGroupNamed:(NSString *)name;
 
+/// 会话行：取该虚拟行对应的原始会话对象（nil = 越界/表头）。
++ (nullable id)conversationForVC:(id)vc row:(WGGVirtualRow *)virtualRow;
+
+/// 会话行：生成/复用自绘"液态玻璃"会话 cell（不依赖微信原生渲染 ——
+/// 实测微信的 cellForRow 只渲染自己显示范围内的小子集，映射回原下标会空白）。
++ (UITableViewCell *)conversationCellForTable:(UITableView *)tableView
+                                conversation:(id)conversation;
+
+/// 会话行高（固定 64，含上下留白）。
++ (CGFloat)conversationHeight;
+
+/// 从会话对象读出显示名（供 cell 与探测调试复用）。
++ (NSString *)displayNameForConversation:(id)conversation;
+
 @end
 
 NS_ASSUME_NONNULL_END

@@ -278,9 +278,11 @@ static BOOL WGGLooksLikeSettingsController(UIViewController *vc) {
     BOOL hit = [cls isEqualToString:@"MoreViewController"] ||
                [cls rangeOfString:@"Setting" options:NSCaseInsensitiveSearch].location != NSNotFound;
     if (!hit) return NO;
-    // 排除我们自己的和明显不是"我→设置"的页面
+    // 排除我们自己的和明显不是"我→设置"的页面。
+    // ⚠️ 绝不能带 "View" —— MoreViewController / NewSettingViewController
+    //    类名都含 "View"（ViewController），之前被它误杀，入口永远注入不了！
     if ([cls hasPrefix:@"WGG"]) return NO;
-    NSArray *bad = @[ @"Picker", @"Edit", @"Detail", @"Info", @"Cell", @"View" ];
+    NSArray *bad = @[ @"Picker", @"Edit", @"Detail", @"Info", @"Cell" ];
     for (NSString *b in bad) {
         if ([cls rangeOfString:b options:NSCaseInsensitiveSearch].location != NSNotFound) return NO;
     }
@@ -505,7 +507,9 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
     return %orig;
 }
 
-// 2) cell：表头行自己画；会话行映射回原始下标后 %orig
+// 2) cell：表头行自己画；会话行用自绘"液态玻璃"cell ——
+//    ⚠️ 不 %orig！日志实锤：微信的 cellForRow 只渲染自己显示范围内的小子集，
+//    映射回原下标（>它的显示数）会返回空白 cell → 组里没有聊天记录。
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
@@ -516,9 +520,13 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
                 c.tag = indexPath.row;
                 return c;
             }
-            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
-                                                     inSection:indexPath.section];
-            return %orig(tableView, mapped);
+            id conv = [WGGQQList conversationForVC:self row:v];
+            if (conv) {
+                return [WGGQQList conversationCellForTable:tableView conversation:conv];
+            }
+            // 会话对象没了（数据刚刷新）→ 空白兜底，别崩溃
+            return [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                           reuseIdentifier:nil] autorelease];
         }
         // 行号超出虚拟行表（折叠导致的重复派发）→ 返回空白 cell 兜底，
         // 绝不把越界行号传给微信（会 OOB 崩溃）
@@ -528,16 +536,14 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
     return %orig;
 }
 
-// 3) 行高：表头行固定（44 + 行间距设置）；会话行映射后问微信
+// 3) 行高：表头行固定（44 + 行间距设置）；会话行自绘固定 64
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
             if (v.isHeader) return [WGGQQList headerHeight];
-            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
-                                                     inSection:indexPath.section];
-            return %orig(tableView, mapped);
+            return [WGGQQList conversationHeight];   // 不再问微信（它只认自己的小子集）
         }
     }
     return %orig;

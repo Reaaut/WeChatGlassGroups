@@ -266,8 +266,8 @@ static NSTimeInterval gLastToggleTime = 0.0;
                              virtualRow:(WGGVirtualRow *)v {
     WGGSectionHeaderCell *cell = [tableView dequeueReusableCellWithIdentifier:kWGGHeaderReuseID];
     if (!cell) {
-        cell = [[WGGSectionHeaderCell alloc] initWithStyle:UITableViewCellStyleDefault
-                                           reuseIdentifier:kWGGHeaderReuseID];
+        cell = [[[WGGSectionHeaderCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                            reuseIdentifier:kWGGHeaderReuseID] autorelease];
     }
     if (v && v.isHeader) {
         WGGGroupStore *store = [WGGGroupStore shared];
@@ -308,6 +308,297 @@ static NSTimeInterval gLastToggleTime = 0.0;
     gCollapseVersion++;   // 版本号变化 → 下次取虚拟行表自动重建
     WGGLogMessage([NSString stringWithFormat:@"分组折叠切换：%@ → %@",
                    name, [store isCollapsedGroup:name] ? @"折叠" : @"展开"]);
+}
+
++ (id)conversationForVC:(id)vc row:(WGGVirtualRow *)v {
+    if (!v || v.isHeader) return nil;
+    NSArray *convs = [WGGConversationSource conversationsForViewController:vc];
+    if (!convs || v.originalIndex >= convs.count) return nil;
+    return [convs objectAtIndex:v.originalIndex];
+}
+
++ (UITableViewCell *)conversationCellForTable:(UITableView *)tableView
+                                conversation:(id)conversation {
+    WGGConversationCell *cell = [tableView dequeueReusableCellWithIdentifier:kWGGConversationReuseID];
+    if (!cell) {
+        cell = [[[WGGConversationCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                           reuseIdentifier:kWGGConversationReuseID] autorelease];
+    }
+    [cell configureWithConversation:conversation];
+    return cell;
+}
+
++ (CGFloat)conversationHeight {
+    return 64.0;
+}
+
++ (NSString *)displayNameForConversation:(id)conversation {
+    return WGGReadStr(conversation, @[
+        @"m_nsTitle", @"title", @"m_nsNickName", @"nickName", @"m_strNickName",
+        @"name", @"m_nsDisplayName", @"displayName", @"m_strName"]);
+}
+
+@end
+
+// ===========================================================================
+// MARK: - 自绘"液态玻璃"会话 cell
+// ===========================================================================
+//
+// 【为什么要自己画】日志实锤（8.0.78）：
+//   · 微信自己的 MainFrameTableView 只显示 m_frontSessionArray 的一个小子集
+//     （rows=6 而数组有 15 个），它的 cellForRow 对超出自己显示范围的索引
+//     直接返回空白 cell → 分组后"组里有行但没有聊天记录"。
+//   · 会话对象上 nick 一律读不到 → 只能自己按 ivar 名链去试。
+//   · 自己画 = 内容 100% 可控 + UI 全面液态玻璃化。
+//
+// 数据读取：ivar 优先、respondsToSelector 兜底，永不触发 KVC（血泪教训）。
+// 读不到就显示占位，绝不崩溃。
+
+static NSString *const kWGGConversationReuseID = @"WGGConversationCell";
+
+/// 自绘会话行：玻璃胶囊 + 圆形首字头像 + 名字/最后消息/时间/未读红点。
+@interface WGGConversationCell : UITableViewCell {
+    UIView *_capsule;
+    UILabel *_avatar;
+    UILabel *_nameLabel;
+    UILabel *_msgLabel;
+    UILabel *_timeLabel;
+    UILabel *_badgeLabel;
+}
+- (void)configureWithConversation:(id)conversation;
+@end
+
+static NSString *WGGReadStr(id obj, NSArray<NSString *> *keys) {
+    if (!obj) return nil;
+    for (NSString *k in keys) {
+        if (k.length == 0) continue;
+        const char *name = [k UTF8String];
+        Ivar iv = class_getInstanceVariable([obj class], name);
+        if (iv) {
+            id v = object_getIvar(obj, iv);
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0)
+                return (NSString *)v;   // +0，调用方立即使用，别留着
+        }
+        SEL sel = NSSelectorFromString(k);
+        if ([obj respondsToSelector:sel]) {
+            id v = [obj performSelector:sel];
+            if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0)
+                return (NSString *)v;   // performSelector 结果已 autorelease
+        }
+    }
+    return nil;
+}
+
+static id WGGReadObj(id obj, NSArray<NSString *> *keys) {
+    if (!obj) return nil;
+    for (NSString *k in keys) {
+        if (k.length == 0) continue;
+        Ivar iv = class_getInstanceVariable([obj class], [k UTF8String]);
+        if (iv) {
+            id v = object_getIvar(obj, iv);
+            if (v) return v;   // +0
+        }
+        SEL sel = NSSelectorFromString(k);
+        if ([obj respondsToSelector:sel]) {
+            id v = [obj performSelector:sel];
+            if (v) return v;
+        }
+    }
+    return nil;
+}
+
+static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys) {
+    id v = WGGReadObj(obj, keys);
+    if ([v isKindOfClass:[NSNumber class]]) return (NSNumber *)v;
+    return nil;
+}
+
+static UIColor *WGGColorForName(NSString *name) {
+    NSUInteger h = name.hash;
+    static UIColor *palette[8];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        palette[0] = [[UIColor alloc] initWithRed:0.35 green:0.62 blue:0.98 alpha:1.0];  // 蓝
+        palette[1] = [[UIColor alloc] initWithRed:0.40 green:0.78 blue:0.55 alpha:1.0];  // 绿
+        palette[2] = [[UIColor alloc] initWithRed:0.98 green:0.64 blue:0.30 alpha:1.0];  // 橙
+        palette[3] = [[UIColor alloc] initWithRed:0.90 green:0.44 blue:0.50 alpha:1.0];  // 粉红
+        palette[4] = [[UIColor alloc] initWithRed:0.62 green:0.55 blue:0.95 alpha:1.0];  // 紫
+        palette[5] = [[UIColor alloc] initWithRed:0.36 green:0.77 blue:0.83 alpha:1.0];  // 青
+        palette[6] = [[UIColor alloc] initWithRed:0.90 green:0.78 blue:0.35 alpha:1.0];  // 黄
+        palette[7] = [[UIColor alloc] initWithRed:0.72 green:0.50 blue:0.34 alpha:1.0];  // 棕
+    });
+    return palette[(h & 0x7FFF) % 8];
+}
+
+@implementation WGGConversationCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier {
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        self.backgroundColor = [UIColor clearColor];
+        self.contentView.backgroundColor = [UIColor clearColor];
+
+        // 玻璃胶囊：UltraThinMaterialLight + 白色 tint + 连续圆角 + 高光描边
+        _capsule = [[UIView alloc] init];   // +1
+        _capsule.translatesAutoresizingMaskIntoConstraints = NO;
+        _capsule.layer.cornerRadius = 16.0;
+        _capsule.layer.cornerCurve = kCACornerCurveContinuous;
+        _capsule.layer.masksToBounds = YES;
+        _capsule.layer.borderWidth = 0.5;
+        _capsule.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
+        UIVisualEffectView *effect = [[UIVisualEffectView alloc]
+                                      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
+        effect.translatesAutoresizingMaskIntoConstraints = NO;
+        effect.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+        effect.frame = _capsule.bounds;
+        effect.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        [_capsule addSubview:effect];
+        [effect release];                   // 净 +1 归 _capsule
+        [self.contentView addSubview:_capsule];
+
+        _avatar = [[UILabel alloc] init];   // +1：圆形色块 + 首字符
+        _avatar.translatesAutoresizingMaskIntoConstraints = NO;
+        _avatar.textAlignment = NSTextAlignmentCenter;
+        _avatar.textColor = [UIColor whiteColor];
+        _avatar.font = [UIFont boldSystemFontOfSize:15];
+        _avatar.layer.cornerRadius = 18.0;
+        _avatar.layer.masksToBounds = YES;
+        [_capsule addSubview:_avatar];
+
+        _nameLabel = [[UILabel alloc] init]; // +1
+        _nameLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _nameLabel.font = [UIFont boldSystemFontOfSize:15];
+        _nameLabel.textColor = [UIColor labelColor];
+        _nameLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        [_capsule addSubview:_nameLabel];
+
+        _msgLabel = [[UILabel alloc] init];  // +1
+        _msgLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _msgLabel.font = [UIFont systemFontOfSize:13];
+        _msgLabel.textColor = [UIColor secondaryLabelColor];
+        _msgLabel.lineBreakMode = NSLineBreakByTruncatingTail;
+        [_capsule addSubview:_msgLabel];
+
+        _timeLabel = [[UILabel alloc] init]; // +1
+        _timeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _timeLabel.font = [UIFont systemFontOfSize:11];
+        _timeLabel.textColor = [UIColor tertiaryLabelColor];
+        _timeLabel.textAlignment = NSTextAlignmentRight;
+        [_capsule addSubview:_timeLabel];
+
+        _badgeLabel = [[UILabel alloc] init];// +1：未读红点
+        _badgeLabel.translatesAutoresizingMaskIntoConstraints = NO;
+        _badgeLabel.backgroundColor = [UIColor systemRedColor];
+        _badgeLabel.textColor = [UIColor whiteColor];
+        _badgeLabel.font = [UIFont boldSystemFontOfSize:11];
+        _badgeLabel.textAlignment = NSTextAlignmentCenter;
+        _badgeLabel.layer.cornerRadius = 9.0;
+        _badgeLabel.layer.masksToBounds = YES;
+        _badgeLabel.hidden = YES;
+        [_capsule addSubview:_badgeLabel];
+
+        NSLayoutConstraint *c1 = [_badgeLabel.widthAnchor constraintGreaterThanOrEqualToConstant:22];
+        NSLayoutConstraint *c2 = [_badgeLabel.heightAnchor constraintEqualToConstant:18];
+        [NSLayoutConstraint activateConstraints:@[
+            [_capsule.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:12],
+            [_capsule.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-12],
+            [_capsule.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:5],
+            [_capsule.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-5],
+
+            [_avatar.leadingAnchor constraintEqualToAnchor:_capsule.leadingAnchor constant:12],
+            [_avatar.centerYAnchor constraintEqualToAnchor:_capsule.centerYAnchor],
+            [_avatar.widthAnchor constraintEqualToConstant:36],
+            [_avatar.heightAnchor constraintEqualToConstant:36],
+
+            [_nameLabel.leadingAnchor constraintEqualToAnchor:_avatar.trailingAnchor constant:10],
+            [_nameLabel.topAnchor constraintEqualToAnchor:_capsule.topAnchor constant:9],
+            [_nameLabel.trailingAnchor constraintLessThanOrEqualToAnchor:_timeLabel.leadingAnchor constant:-6],
+
+            [_msgLabel.leadingAnchor constraintEqualToAnchor:_nameLabel.leadingAnchor],
+            [_msgLabel.topAnchor constraintEqualToAnchor:_nameLabel.bottomAnchor constant:2],
+            [_msgLabel.trailingAnchor constraintEqualToAnchor:_capsule.trailingAnchor constant:-12],
+
+            [_timeLabel.trailingAnchor constraintEqualToAnchor:_capsule.trailingAnchor constant:-12],
+            [_timeLabel.topAnchor constraintEqualToAnchor:_capsule.topAnchor constant:9],
+            [_timeLabel.widthAnchor constraintGreaterThanOrEqualToConstant:44],
+
+            [_badgeLabel.trailingAnchor constraintEqualToAnchor:_capsule.trailingAnchor constant:-12],
+            [_badgeLabel.bottomAnchor constraintEqualToAnchor:_capsule.bottomAnchor constant:-9],
+            c1, c2,
+        ]];
+        [c1 release];
+        [c2 release];
+    }
+    return self;
+}
+
+- (void)configureWithConversation:(id)conversation {
+    if (!conversation) {
+        _nameLabel.text = @" ";
+        _avatar.text = @"?";
+        _msgLabel.text = @" ";
+        _timeLabel.text = @" ";
+        _badgeLabel.hidden = YES;
+        return;
+    }
+
+    NSString *name = [WGGQQList displayNameForConversation:conversation];
+    _nameLabel.text = name.length ? name : @"会话";
+    NSString *first = name.length ? [name substringToIndex:1] : @"?";
+    _avatar.text = first;
+    _avatar.backgroundColor = WGGColorForName(name.length ? name : @"会话");
+
+    NSString *msg = WGGReadStr(conversation, @[
+        @"m_nsMessage", @"message", @"m_strMessage", @"m_nsLastMsg", @"lastMessage", @"m_lastMsgText"]);
+    if (!msg) {
+        id wrap = WGGReadObj(conversation, @[
+            @"m_lastMsgWrap", @"m_msgWrap", @"lastMsgWrap", @"m_lastMsg", @"lastMsg"]);
+        msg = WGGReadStr(wrap, @[
+            @"m_nsContent", @"content", @"m_nsText", @"text", @"m_strContent", @"m_strText", @"summary", @"desc"]);
+    }
+    _msgLabel.text = msg.length ? msg : @" ";
+
+    NSString *time = WGGReadStr(conversation, @[
+        @"m_timeString", @"m_nsTimeString", @"timeString", @"m_timeStr", @"timeText"]);
+    if (!time) {
+        NSNumber *ts = WGGReadNum(conversation, @[
+            @"m_uiLastMsgTime", @"lastMsgTime", @"m_lastMsgTime", @"m_uiTimeStamp"]);
+        if (ts) {
+            NSTimeInterval ti = ts.doubleValue;
+            if (ti > 1e12) ti /= 1000.0;    // 毫秒 → 秒
+            NSDate *d = [NSDate dateWithTimeIntervalSince1970:ti];
+            static NSDateFormatter *fmt;
+            static dispatch_once_t once;
+            dispatch_once(&once, ^{
+                fmt = [[NSDateFormatter alloc] init];
+                fmt.dateFormat = @"HH:mm";
+            });
+            time = [fmt stringFromDate:d];
+        }
+    }
+    _timeLabel.text = time.length ? time : @" ";
+
+    NSNumber *unread = WGGReadNum(conversation, @[
+        @"m_uiUnReadCount", @"unReadCount", @"m_unReadCount", @"m_uiCount"]);
+    NSUInteger n = unread ? unread.unsignedIntegerValue : 0;
+    if (n > 0) {
+        _badgeLabel.text = n > 99 ? @"99+" : [NSString stringWithFormat:@"%lu", (unsigned long)n];
+        _badgeLabel.hidden = NO;
+    } else {
+        _badgeLabel.text = nil;
+        _badgeLabel.hidden = YES;
+    }
+}
+
+- (void)dealloc {
+    [_capsule release];
+    [_avatar release];
+    [_nameLabel release];
+    [_msgLabel release];
+    [_timeLabel release];
+    [_badgeLabel release];
+    [super dealloc];
 }
 
 @end

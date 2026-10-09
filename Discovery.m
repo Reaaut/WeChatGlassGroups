@@ -378,6 +378,37 @@ void WGGProbeConversations(void) {
         WGGLog(@"会话探测：归类分布 好友=%lu 群聊=%lu 公众号=%lu 系统=%lu 未知=%lu",
                (unsigned long)friends, (unsigned long)groups,
                (unsigned long)official, (unsigned long)sys, (unsigned long)unknown);
+
+        // 【转储】第一个会话对象的全部成员变量（值截断 40 字符）——
+        // 自绘会话 cell 要用到昵称/消息/时间/未读的真实字段名，就看这里。
+        if (found.count > 0) {
+            id first = found[0];
+            unsigned int ivarCount = 0;
+            Ivar *ivars = class_copyIvarList([first class], &ivarCount);
+            WGGLog(@"会话探测：%@ 成员变量（%u 个）",
+                   NSStringFromClass([first class]), ivarCount);
+            unsigned int shown = ivarCount < 60 ? ivarCount : 60;
+            for (unsigned int i = 0; i < shown; i++) {
+                Ivar iv = ivars[i];
+                const char *n = ivar_getName(iv);
+                const char *t = ivar_getTypeEncoding(iv);
+                NSString *val = @"(标量)";
+                if (t && (t[0] == '@' || t[0] == '#')) {
+                    id v = object_getIvar(first, iv);
+                    if (!v) val = @"(nil)";
+                    else if ([v isKindOfClass:[NSString class]]) {
+                        NSString *s = (NSString *)v;
+                        NSString *trim = s.length > 40 ? [s substringToIndex:40] : s;
+                        val = [NSString stringWithFormat:@"\"%@\"", trim];
+                    }
+                    else if ([v isKindOfClass:[NSNumber class]]) val = [v description];
+                    else if ([v isKindOfClass:[NSDate class]]) val = [v description];
+                    else val = [NSString stringWithFormat:@"<%@>", NSStringFromClass([v class])];
+                }
+                WGGLog(@"   %s (%s) = %@", n ? n : "?", t ? t : "?", val);
+            }
+            free(ivars);
+        }
     }
 }
 
