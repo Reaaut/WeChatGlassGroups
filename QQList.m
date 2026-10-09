@@ -11,6 +11,7 @@
 #import "GroupStore.h"
 #import "ConversationSource.h"
 #import "Discovery.h"       // WGGLogMessage（同时会落文件）
+#import <QuartzCore/QuartzCore.h>   // kCACornerCurveContinuous
 #import <objc/message.h>
 
 // ============================ 虚拟行模型 ============================
@@ -81,16 +82,21 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
         self.selectionStyle = UITableViewCellSelectionStyleNone;
         self.contentView.backgroundColor = [UIColor clearColor];
 
-        // 玻璃底：小毛玻璃 + 圆角浮条（和抽屉行同风格）
+        // 玻璃底：液态玻璃配方（和抽屉行同款）——
+        //   UltraThinMaterialLight 毛玻璃 + 白色半透明 tint + 连续圆角 + 高光描边
         _blur = [[UIView alloc] init];                       // +1
         _blur.translatesAutoresizingMaskIntoConstraints = NO;
         _blur.layer.cornerRadius = 12.0;
+        _blur.layer.cornerCurve = kCACornerCurveContinuous;  // 连续圆角（液态感）
         _blur.layer.masksToBounds = YES;
+        _blur.layer.borderWidth = 0.5;
+        _blur.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
         UIVisualEffectView *effect = [[UIVisualEffectView alloc]
-                                      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThinMaterial]];
+                                      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
         effect.translatesAutoresizingMaskIntoConstraints = NO;
         effect.frame = _blur.bounds;                          // layoutSubviews 会再对齐
         effect.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        effect.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];   // tint
         [_blur addSubview:effect];
         [effect release];                                     // _blur 已持有（净 +1）
         [self.contentView addSubview:_blur];
@@ -147,6 +153,11 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
     _nameLabel.text = name;
     _countLabel.text = [NSString stringWithFormat:@"%lu", (unsigned long)count];
 
+    // 玻璃透明度跟随设置（用户可调）
+    WGGGroupStore *store = [WGGGroupStore shared];
+    CGFloat alpha = store.glassAlpha;
+    _blur.alpha = MAX(0.2, MIN(1.0, alpha));
+
     UIImage *img = nil;
     if ([UIImage respondsToSelector:@selector(systemImageNamed:)]) {
         img = [UIImage systemImageNamed:symbolName];
@@ -182,6 +193,8 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
 static NSArray<WGGVirtualRow *> *gRows = nil;     // 虚拟行表缓存（+1 static 持有）
 static NSString *gRowsSig = nil;                  // 缓存签名（+1）
 static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（变了就重建）
+static NSString *gLastToggleGroup = nil;          // 防抖：同组最近一次切换（+1）
+static NSTimeInterval gLastToggleTime = 0.0;
 
 @implementation WGGQQList
 
@@ -276,6 +289,20 @@ static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（变
 
 + (void)toggleGroupNamed:(NSString *)name {
     if (name.length == 0) return;
+
+    // 防抖：同组 0.5 秒内只认第一次。
+    // ⚠️ 日志实锤（8.0.78）：reloadData 在 didSelect 里同步执行时，
+    //    UIKit 会把同一次点击重复派发 2~4 次（一秒内"展开→折叠→展开→折叠"连响），
+    //    最后状态等于没变 —— 用户体感就是"展开不了"。
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (gLastToggleGroup && [gLastToggleGroup isEqualToString:name] &&
+        (now - gLastToggleTime) < 0.5) {
+        return;
+    }
+    [gLastToggleGroup release];
+    gLastToggleGroup = [name copy];
+    gLastToggleTime = now;
+
     WGGGroupStore *store = [WGGGroupStore shared];
     [store toggleCollapsedForGroup:name];
     gCollapseVersion++;   // 版本号变化 → 下次取虚拟行表自动重建

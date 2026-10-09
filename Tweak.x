@@ -30,6 +30,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <QuartzCore/QuartzCore.h>   // kCACornerCurveContinuous
 
 #import "GlassGroupPanel.h"
 #import "GroupStore.h"
@@ -291,8 +292,19 @@ static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc) {
     if (!WGGVersionSupported()) return;
     if (!WGGLooksLikeSettingsController(vc)) return;
 
+    // 先在自己 view 里找（常规情况）；找不到再扫整个 window ——
+    // 日志显示 MoreViewController 出现但入口没注入，说明它的表格可能
+    // 不在 vc.view 的子树里（微信 8.0.78 有独立的 hosting window）。
     UITableView *table = WGGFindMainTableView(vc.view);
-    if (!table) return;
+    if (!table && vc.view.window) {
+        table = WGGFindMainTableView(vc.view.window);
+    }
+    if (!table) {
+        WGGLogMessage([NSString stringWithFormat:
+                       @"设置页 %@ 没找到表格（view=%@，供下轮修复）",
+                       NSStringFromClass([vc class]), NSStringFromClass([vc.view class])]);
+        return;
+    }
 
     // 已经注入过就不再重复（ associate 到 table 上，而不是 vc ——
     // 同一个 vc 里可能有多张表，按表去重更准）
@@ -307,23 +319,39 @@ static void WGGInstallSettingsEntryIfNeeded(UIViewController *vc) {
                    NSStringFromClass([vc class]), NSStringFromClass([table class])]);
 }
 
-/// 造一行长得像微信设置 cell 的入口（图标 + 标题 + 箭头），点它进插件设置页。
+/// 造一行"液态玻璃胶囊"样式的设置入口（图标 + 标题 + 箭头），点它进插件设置页。
 ///
 /// ⚠️ tableFooterView 的自适应是个坑：
-///    如果把 row 的 translatesAutoresizingMaskIntoConstraints 设成 NO，
+///    如果把容器的 translatesAutoresizingMaskIntoConstraints 设成 NO，
 ///    它的宽度就没有约束来源 → 会被压成 0 宽，什么都看不见。
-///    所以这里反过来：row 用固定 frame（高 48、宽 = 屏宽），
-///    内部子视图再用 Auto Layout 相对 row 排。
+///    所以容器用固定 frame（高 64、宽 = 屏宽），玻璃胶囊在里面用 Auto Layout 排。
 static UIView *WGGMakeSettingsEntryRow(void) {
     CGFloat w = [UIScreen mainScreen].bounds.size.width;
-    UIView *row = [[[UIControl alloc] initWithFrame:CGRectMake(0, 0, w, 48)] autorelease];
-    row.backgroundColor = [UIColor secondarySystemGroupedBackgroundColor];
-    // 注意：row 自己不要动 translatesAutoresizingMaskIntoConstraints
+    UIView *container = [[[UIView alloc] initWithFrame:CGRectMake(0, 0, w, 64)] autorelease];
+    container.backgroundColor = [UIColor clearColor];
+    // 注意：container 自己不要动 translatesAutoresizingMaskIntoConstraints
 
-    UIControl *tap = (UIControl *)row;
-    [tap addTarget:[WGGSettingsEntryHandler sharedHandler]
+    // 玻璃胶囊（和 QQ 表头/抽屉同款液态玻璃配方）
+    UIControl *pill = [[[UIControl alloc] initWithFrame:CGRectZero] autorelease];
+    pill.translatesAutoresizingMaskIntoConstraints = NO;
+    [pill addTarget:[WGGSettingsEntryHandler sharedHandler]
             action:@selector(entryTapped:)
   forControlEvents:UIControlEventTouchUpInside];
+    [container addSubview:pill];
+
+    UIVisualEffectView *blur = [[UIVisualEffectView alloc]
+                                initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
+    blur.translatesAutoresizingMaskIntoConstraints = NO;
+    blur.layer.cornerRadius = 14.0;
+    blur.layer.cornerCurve = kCACornerCurveContinuous;      // 连续圆角（液态感）
+    blur.clipsToBounds = YES;
+    blur.layer.borderWidth = 0.5;
+    blur.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
+    blur.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
+    WGGGroupStore *store = [WGGGroupStore shared];
+    blur.alpha = MAX(0.2, MIN(1.0, store.glassAlpha));      // 玻璃透明度设置
+    [pill addSubview:blur];
+    [blur release];                                          // pill 已持有（净 +1）
 
     UIImageView *icon = [[[UIImageView alloc] init] autorelease];
     if (@available(iOS 13.0, *)) {
@@ -332,14 +360,14 @@ static UIView *WGGMakeSettingsEntryRow(void) {
     icon.tintColor = [UIColor systemBlueColor];
     icon.contentMode = UIViewContentModeScaleAspectFit;
     icon.translatesAutoresizingMaskIntoConstraints = NO;
-    [row addSubview:icon];
+    [blur.contentView addSubview:icon];
 
     UILabel *title = [[[UILabel alloc] init] autorelease];
     title.text = @"会话分组（液态玻璃）";
     title.font = [UIFont systemFontOfSize:17];
     title.textColor = [UIColor labelColor];
     title.translatesAutoresizingMaskIntoConstraints = NO;
-    [row addSubview:title];
+    [blur.contentView addSubview:title];
 
     UIImageView *chevron = [[[UIImageView alloc] init] autorelease];
     if (@available(iOS 13.0, *)) {
@@ -348,23 +376,34 @@ static UIView *WGGMakeSettingsEntryRow(void) {
     chevron.tintColor = [UIColor tertiaryLabelColor];
     chevron.contentMode = UIViewContentModeScaleAspectFit;
     chevron.translatesAutoresizingMaskIntoConstraints = NO;
-    [row addSubview:chevron];
+    [blur.contentView addSubview:chevron];
 
     [NSLayoutConstraint activateConstraints:@[
-        [icon.leadingAnchor constraintEqualToAnchor:row.leadingAnchor constant:16],
-        [icon.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        // 胶囊在容器里留边（浮条感）
+        [pill.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:12],
+        [pill.trailingAnchor constraintEqualToAnchor:container.trailingAnchor constant:-12],
+        [pill.topAnchor constraintEqualToAnchor:container.topAnchor constant:8],
+        [pill.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-8],
+
+        [blur.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor],
+        [blur.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor],
+        [blur.topAnchor constraintEqualToAnchor:pill.topAnchor],
+        [blur.bottomAnchor constraintEqualToAnchor:pill.bottomAnchor],
+
+        [icon.leadingAnchor constraintEqualToAnchor:blur.contentView.leadingAnchor constant:16],
+        [icon.centerYAnchor constraintEqualToAnchor:blur.contentView.centerYAnchor],
         [icon.widthAnchor constraintEqualToConstant:22],
         [icon.heightAnchor constraintEqualToConstant:22],
 
         [title.leadingAnchor constraintEqualToAnchor:icon.trailingAnchor constant:12],
-        [title.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [title.centerYAnchor constraintEqualToAnchor:blur.contentView.centerYAnchor],
 
-        [chevron.trailingAnchor constraintEqualToAnchor:row.trailingAnchor constant:-16],
-        [chevron.centerYAnchor constraintEqualToAnchor:row.centerYAnchor],
+        [chevron.trailingAnchor constraintEqualToAnchor:blur.contentView.trailingAnchor constant:-16],
+        [chevron.centerYAnchor constraintEqualToAnchor:blur.contentView.centerYAnchor],
         [chevron.widthAnchor constraintEqualToConstant:12],
         [chevron.heightAnchor constraintEqualToConstant:12],
     ]];
-    return row;
+    return container;
 }
 
 @implementation WGGSettingsEntryHandler
@@ -420,7 +459,7 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
         }
 
         WGGProbeOnceIfPossible(self);          // 阶段一：拿真名 + 验证归类
-        WGGInstallDrawerIfNeeded(self);        // 首页：挂抽屉
+        // ⚠️ 悬浮窗（抽屉）已按用户要求拆除 —— 设置入口只放微信自己的设置页
         WGGInstallSettingsEntryIfNeeded(self); // 设置页：注入插件入口
     }
 }
@@ -481,6 +520,10 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
                                                      inSection:indexPath.section];
             return %orig(tableView, mapped);
         }
+        // 行号超出虚拟行表（折叠导致的重复派发）→ 返回空白 cell 兜底，
+        // 绝不把越界行号传给微信（会 OOB 崩溃）
+        return [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                       reuseIdentifier:nil] autorelease];
     }
     return %orig;
 }
@@ -510,6 +553,8 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
                 [WGGQQList toggleGroupNamed:v.groupName];
                 [tableView deselectRowAtIndexPath:indexPath animated:NO];
                 [tableView reloadData];
+                WGGLogMessage([NSString stringWithFormat:
+                               @"折叠切换后 行数=%ld", (long)[tableView numberOfRowsInSection:0]]);
                 return;
             }
             NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
@@ -532,7 +577,7 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups loaded（阶段一：探测 + 抽屉 UI）");
+        WGGLogMessage(@"WeChatGlassGroups loaded（QQ 式分组列表 + 设置页入口）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

@@ -470,6 +470,11 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
     // ② 公众号 / 服务号：gh_ 开头
     if ([ident hasPrefix:@"gh_"]) return WGGAutoKindOfficial;
 
+    // ②.5 公众号聚合入口（brandsessionholder 等 brand 会话）—— 日志实锤
+    //     用户表里出现 brandsessionholder，之前被误分到好友 → 公众号计数变 0
+    if ([ident hasPrefix:@"brandsession"] || [ident hasPrefix:@"brandsessionholder"])
+        return WGGAutoKindOfficial;
+
     // ③ 微信自己的系统会话，是固定的一批 id
     static NSSet *sysIDs;
     static dispatch_once_t once;

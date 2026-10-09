@@ -1,6 +1,6 @@
 Package: com.yourname.wechatglassgroups
 Name: WeChatGlassGroups
-Version: 0.2.0
+Version: 0.2.1
 Architecture: iphoneos-arm64
 Description: WeChat conversation grouping panel with an iOS 16 glass (blur) UI. Personal-use tweak for WeChat 8.0.78 on iOS 16.1.1.
 Maintainer: yourname
