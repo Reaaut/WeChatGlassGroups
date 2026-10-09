@@ -633,9 +633,10 @@ static void WGGOpenChatDirect(UIViewController *fromVC, NSString *username, NSSt
                 nativeIP = ((NSIndexPath * (*)(id, SEL, id))objc_msgSend)(self, selIP, username);
             }
             WGGLogMessage([NSString stringWithFormat:
-                           @"点会话 虚拟行=%ld 用户名=%@ 微信索引=%@",
+                           @"点会话 虚拟行=%ld 用户名=%@ 微信索引=[第%ld节 第%ld行]",
                            (long)indexPath.row, username,
-                           nativeIP ? NSStringFromIndexPath(nativeIP) : @"(无)"]);
+                           nativeIP ? (long)nativeIP.section : -1L,
+                           nativeIP ? (long)nativeIP.row : -1L]);
             if (nativeIP) {
                 %orig(tableView, nativeIP);
                 return;
