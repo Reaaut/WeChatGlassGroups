@@ -213,7 +213,7 @@ static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（变
         [sig release];
         return gRows;
     }
-    [gSig release];
+    [gRowsSig release];
     gRowsSig = sig;   // +1 接管
 
     WGGGroupStore *store = [WGGGroupStore shared];
