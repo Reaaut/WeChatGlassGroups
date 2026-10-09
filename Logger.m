@@ -15,7 +15,6 @@ static const long kLogKeepBytes     = 256 * 1024;
 
 // 解析出来的最终路径（dispatch_once 写入，之后只读）
 static NSString *gLogPath = nil;
-static dispatch_queue_t gLogQueue = nil;
 
 /// 依次尝试的候选路径（返回数组里第一个能写成功的）。
 static NSArray<NSString *> *WGGLogPathCandidates(void) {
@@ -71,7 +70,6 @@ static void WGGLogSetup(void) {
 void WGGFileLogAppend(NSString *line) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        gLogQueue = dispatch_queue_create("com.yourname.wechatglassgroups.log", DISPATCH_QUEUE_SERIAL);
         WGGLogSetup();
     });
     if (!gLogPath || !line.length) return;
@@ -86,28 +84,29 @@ void WGGFileLogAppend(NSString *line) {
 
     NSString *out = [NSString stringWithFormat:@"[%@] %@\n", [fmt stringFromDate:[NSDate date]], line];
 
-    dispatch_async(gLogQueue, ^{
-        NSFileManager *fm = [NSFileManager defaultManager];
-        NSDictionary *attr = [fm attributesOfItemAtPath:gLogPath error:NULL];
-        unsigned long long size = attr ? [attr fileSize] : 0;
+    // ⚠️ 必须同步写：之前用 dispatch_async，进程一崩最后几行全丢——
+    //    排查"设置闪退"时日志里连"被点击"都看不到，就是它干的。
+    //    单行写入极小，同步的性能代价可以忽略。
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSDictionary *attr = [fm attributesOfItemAtPath:gLogPath error:NULL];
+    unsigned long long size = attr ? [attr fileSize] : 0;
 
-        if (size > (unsigned long long)kLogTrimThreshold) {
-            // 截断：只留最后 kLogKeepBytes，避免文件无限膨胀
-            NSString *all = [NSString stringWithContentsOfFile:gLogPath
-                                                  encoding:NSUTF8StringEncoding error:NULL];
-            if (all.length > (NSUInteger)kLogKeepBytes) {
-                NSString *tail = [all substringFromIndex:all.length - (NSUInteger)kLogKeepBytes];
-                [tail writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-            }
+    if (size > (unsigned long long)kLogTrimThreshold) {
+        // 截断：只留最后 kLogKeepBytes，避免文件无限膨胀
+        NSString *all = [NSString stringWithContentsOfFile:gLogPath
+                                              encoding:NSUTF8StringEncoding error:NULL];
+        if (all.length > (NSUInteger)kLogKeepBytes) {
+            NSString *tail = [all substringFromIndex:all.length - (NSUInteger)kLogKeepBytes];
+            [tail writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
         }
+    }
 
-        NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gLogPath];
-        if (!fh) return;
-        [fh seekToEndOfFile];
-        NSData *data = [out dataUsingEncoding:NSUTF8StringEncoding];
-        if (data) [fh writeData:data];
-        [fh closeFile];
-    });
+    NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:gLogPath];
+    if (!fh) return;
+    [fh seekToEndOfFile];
+    NSData *data = [out dataUsingEncoding:NSUTF8StringEncoding];
+    if (data) [fh writeData:data];
+    [fh closeFile];
 }
 
 NSString *WGGFileLogContents(void) {

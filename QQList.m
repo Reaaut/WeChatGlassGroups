@@ -212,9 +212,7 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
 
 // ============================ 列表协调 ============================
 
-static NSArray<WGGVirtualRow *> *gRows = nil;     // 虚拟行表缓存（+1 static 持有）
-static NSString *gRowsSig = nil;                  // 缓存签名（+1）
-static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（变了就重建）
+static NSUInteger gCollapseVersion = 0;           // 折叠状态版本号（仅日志观测用）
 static NSString *gLastToggleGroup = nil;          // 防抖：同组最近一次切换（+1）
 static NSTimeInterval gLastToggleTime = 0.0;
 
@@ -239,20 +237,14 @@ static NSTimeInterval gLastToggleTime = 0.0;
 }
 
 + (NSArray<WGGVirtualRow *> *)virtualRowsForVC:(id)vc {
+    // 【不缓存！】微信的会话数组是活的：来一条消息就重排一次。
+    // 缓存里存的是"下标快照"，数组一重排，旧下标就指向别人——
+    // 同一个聊天在分组里出现多次（用户实测"多添加一样的"）就是这么来的。
+    // 15~30 个会话实时重建的成本可以忽略，每次调用都现算，永远新鲜。
     NSArray *convs = [WGGConversationSource conversationsForViewController:vc];
-    NSUInteger n = convs ? convs.count : 0;
-
-    NSString *sig = [[NSString alloc] initWithFormat:@"%lu|%lu",
-                     (unsigned long)n, (unsigned long)gCollapseVersion];
-    if (gRowsSig && gRows && [gRowsSig isEqualToString:sig]) {
-        [sig release];
-        return gRows;
-    }
-    [gRowsSig release];
-    gRowsSig = sig;   // +1 接管
 
     WGGGroupStore *store = [WGGGroupStore shared];
-    NSMutableArray *rows = [[NSMutableArray alloc] init];   // +1
+    NSMutableArray *rows = [NSMutableArray array];          // 自动释放，调用方立即使用
     NSArray<WGGSection *> *secs = [store sectionsForConversations:convs];
     for (WGGSection *s in secs) {
         // 主列表只用三个自动分组（自定义分组不进主列表，避免同一会话重复出现）
@@ -270,10 +262,7 @@ static NSTimeInterval gLastToggleTime = 0.0;
             }
         }
     }
-
-    [gRows release];
-    gRows = rows;                                           // +1 接管
-    return gRows;
+    return rows;
 }
 
 + (CGFloat)headerHeight {
@@ -302,11 +291,12 @@ static NSTimeInterval gLastToggleTime = 0.0;
 }
 
 + (void)toggleGroupAtRow:(NSInteger)row {
-    NSArray *rows = gRows;
-    if (row < 0 || (NSUInteger)row >= rows.count) return;
-    WGGVirtualRow *v = rows[(NSUInteger)row];
-    if (!v.isHeader) return;
-    [self toggleGroupNamed:v.groupName];
+    // 【已废弃路径】行表不再缓存，这里拿不到行模型。
+    // 实际折叠都走 didSelect 里的 toggleGroupNamed:（带防抖）。
+    if (row >= 0) {
+        WGGLogMessage([NSString stringWithFormat:
+                       @"toggleGroupAtRow: 已废弃（行=%ld，请走 toggleGroupNamed:）", (long)row]);
+    }
 }
 
 + (void)toggleGroupNamed:(NSString *)name {
@@ -450,10 +440,10 @@ static UIColor *WGGColorForName(NSString *name) {
         self.backgroundColor = [UIColor clearColor];
         self.contentView.backgroundColor = [UIColor clearColor];
 
-        // 玻璃胶囊：UltraThinMaterialLight + 白色 tint + 连续圆角 + 高光描边
+        // 玻璃胶囊：和设置页入口同款配方（UltraThinMaterialLight + 白 tint + 圆角14 + 高光描边）
         _capsule = [[UIView alloc] init];   // +1
         _capsule.translatesAutoresizingMaskIntoConstraints = NO;
-        _capsule.layer.cornerRadius = 16.0;
+        _capsule.layer.cornerRadius = 14.0;
         _capsule.layer.cornerCurve = kCACornerCurveContinuous;
         _capsule.layer.masksToBounds = YES;
         _capsule.layer.borderWidth = 0.5;

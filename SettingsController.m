@@ -115,7 +115,12 @@ typedef NS_ENUM(NSInteger, WGGSettingTag) {
         [_stack.widthAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.widthAnchor constant:-32],
     ]];
 
-    [self rebuildContent];
+    @try {
+        [self rebuildContent];
+    } @catch (NSException *e) {
+        // 构建失败只记日志，绝不让微信跟着陪葬
+        WGGLogMessage([NSString stringWithFormat:@"设置页构建异常：%@", e]);
+    }
 }
 
 #pragma mark 内容构建

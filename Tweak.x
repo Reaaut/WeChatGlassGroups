@@ -30,6 +30,7 @@
 
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <QuartzCore/QuartzCore.h>   // kCACornerCurveContinuous
 
 #import "GlassGroupPanel.h"
@@ -253,19 +254,22 @@ static void WGGInstallDrawerIfNeeded(UIViewController *vc) {
 //   坏处：如果微信在 viewDidAppear 之后又把 tableFooterView 置回 nil，入口会消失
 //   —— 所以 %hook UITableView 里有个"补挂"逻辑（见下）。
 
-/// 从任意控制器把设置页推出来；没有导航栈就改成模态弹出。
+/// 把设置页弹出来。
+/// ⚠️ 刻意只用模态、绝不 push：微信的 MMUINavigationController 是私有容器，
+/// 对被 push 的页面有一堆内部约定（日志实锤它有 haveLazyInit 等自定义流程），
+/// 普通 UIViewController 被它 push 会在那些流程里闪退（用户实测：一点就崩）。
+/// 模态 FormSheet 走标准 UIKit，微信自己也这么用，最稳。
 static void WGGPushSettingsFrom(UIViewController *vc) {
     if (!vc) return;
+    WGGLogMessage([NSString stringWithFormat:@"设置页：准备从 %@ 模态弹出", NSStringFromClass([vc class])]);
     WGGSettingsController *settings = [[[WGGSettingsController alloc] init] autorelease];
-
-    UINavigationController *nav = vc.navigationController;
-    if (nav && nav.visibleViewController == vc) {
-        [nav pushViewController:settings animated:YES];
-        return;
-    }
-    // 兜底：模态弹出（微信首页一般都有导航栈，走不到这里）
     settings.modalPresentationStyle = UIModalPresentationFormSheet;
-    [vc presentViewController:settings animated:YES completion:nil];
+    @try {
+        [vc presentViewController:settings animated:YES completion:nil];
+        WGGLogMessage(@"设置页：模态弹出调用完成");
+    } @catch (NSException *e) {
+        WGGLogMessage([NSString stringWithFormat:@"设置页：弹出失败 %@", e]);
+    }
 }
 
 /// 判断这个控制器像不像微信的「设置」页。
@@ -515,11 +519,43 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
 //
 // 【做法】在微信的会话表里"插行"：
 //   · numberOfRows = 表头数 + 展开分组的会话数
-//   · cellForRow：表头行返回我们自己的玻璃 cell；会话行把行号映射回
-//     原始下标后 %orig 交给微信原生实现 —— 绝不修改微信数组
+//   · cellForRow：表头行和会话行都由我们自绘（液态玻璃）
 //   · 表头行点击 → 折叠/展开（持久化）→ reloadData
+//   · 会话行点击 → 用微信自己的 indexPathOfSessionUserName: 换算行号后走原生
+//     流程；拿不到就直接构造 BaseMsgContentViewController（社区验证的稳定方案）
 //   · 搜索态 / 总开关关 / 找不到数组 → 全部让路，微信行为 100% 原生
 //
+
+/// 直接构造微信聊天页（社区多年验证的稳定方案）：
+/// alloc BaseMsgContentViewController → 塞 m_nsUsrName / m_nsNickName → push。
+/// 优先用 setter（正确 retain）；没有 setter 才 object_setIvar + retain（MRC 手动接管）。
+static void WGGOpenChatDirect(UIViewController *fromVC, NSString *username, NSString *nick) {
+    Class chatCls = NSClassFromString(@"BaseMsgContentViewController");
+    if (!chatCls || username.length == 0) return;
+    id chat = [[chatCls alloc] init];   // +1
+
+    SEL setUsr = NSSelectorFromString(@"setM_nsUsrName:");
+    if ([chat respondsToSelector:setUsr]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(chat, setUsr, username);
+    } else {
+        Ivar iv = class_getInstanceVariable(chatCls, "m_nsUsrName");
+        if (iv) object_setIvar(chat, iv, [username retain]);   // MRC：ivar 接管 +1
+    }
+    SEL setNick = NSSelectorFromString(@"setM_nsNickName:");
+    if ([chat respondsToSelector:setNick]) {
+        ((void (*)(id, SEL, id))objc_msgSend)(chat, setNick, nick ?: @"");
+    } else {
+        Ivar iv = class_getInstanceVariable(chatCls, "m_nsNickName");
+        if (iv) object_setIvar(chat, iv, [(nick ?: @"") retain]);
+    }
+
+    UINavigationController *nav = fromVC.navigationController;
+    if (nav) {
+        [nav pushViewController:chat animated:YES];
+    }
+    [chat release];   // push 已被 nav retain；没有 nav 就直接释放
+}
+
 %hook NewMainFrameViewController
 
 // 1) 行数 = 表头数 + 展开分组的会话数
@@ -586,11 +622,29 @@ static NSMutableSet *gWGGSeenVCClasses = nil;
                                @"折叠切换后 行数=%ld", (long)[tableView numberOfRowsInSection:0]]);
                 return;
             }
-            NSIndexPath *mapped = [NSIndexPath indexPathForRow:(NSInteger)v.originalIndex
-                                                     inSection:indexPath.section];
-            WGGLogMessage([NSString stringWithFormat:@"点会话 虚拟行=%ld 原索引=%lu",
-                           (long)indexPath.row, (unsigned long)v.originalIndex]);
-            %orig(tableView, mapped);
+            id conv = [WGGQQList conversationForVC:self row:v];
+            NSString *username = conv ? [WGGGroupStore keyForConversation:conv] : nil;
+
+            // 首选：把用户名换成微信自己的行号（原生 didSelect 只认自己的行号空间，
+            // 我们插入表头后行号错位，直接 %orig 映射会静默失效 = "点不开"）
+            NSIndexPath *nativeIP = nil;
+            SEL selIP = NSSelectorFromString(@"indexPathOfSessionUserName:");
+            if (username.length > 0 && [self respondsToSelector:selIP]) {
+                nativeIP = ((NSIndexPath * (*)(id, SEL, id))objc_msgSend)(self, selIP, username);
+            }
+            WGGLogMessage([NSString stringWithFormat:
+                           @"点会话 虚拟行=%ld 用户名=%@ 微信索引=%@",
+                           (long)indexPath.row, username,
+                           nativeIP ? NSStringFromIndexPath(nativeIP) : @"(无)"]);
+            if (nativeIP) {
+                %orig(tableView, nativeIP);
+                return;
+            }
+            // 兜底：微信自己的行号拿不到 → 直接构造聊天页
+            if (username.length > 0) {
+                WGGOpenChatDirect(self, username,
+                                  [WGGQQList displayNameForConversation:conv] ?: @"");
+            }
             return;
         }
     }

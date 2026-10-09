@@ -784,8 +784,17 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
     NSMutableArray<NSString *> *customOrder = [NSMutableArray array];
 
     if ([conversations isKindOfClass:[NSArray class]]) {
+        // 【去重】微信数组里同一个会话可能有多份（置顶折叠的副本，日志实锤
+        // brandsessionholder 出现 3 次）—— 同 key 只收第一次，其余跳过。
+        NSMutableSet *seen = [[NSMutableSet alloc] init];   // +1，循环结束统一放
         for (NSUInteger i = 0; i < conversations.count; i++) {
             id conv = conversations[i];
+            NSString *key = [WGGGroupStore keyForConversation:conv];
+
+            // 同 key 的副本整个跳过（它的分组归属第一份已经加过了）
+            if (key.length > 0 && [seen containsObject:key]) continue;
+            if (key.length > 0) [seen addObject:key];
+
             WGGAutoKind k = [WGGGroupStore autoKindForConversation:conv];
             NSString *bucket = nil;
             if (k == WGGAutoKindFriend)        bucket = WGGGroupFriendsName;
@@ -796,7 +805,6 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
             [buckets[bucket] addObject:@(i)];
 
             // 自定义分组：按归属表算（一个会话可进多个自定义分组）
-            NSString *key = [WGGGroupStore keyForConversation:conv];
             if (key.length == 0) continue;
             for (NSString *g in [self groupsForChatKey:key]) {
                 if (buckets[g] == nil) {
@@ -806,6 +814,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
                 [buckets[g] addObject:@(i)];
             }
         }
+        [seen release];
     }
 
     NSMutableArray *out = [NSMutableArray array];
