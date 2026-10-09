@@ -553,6 +553,9 @@ static void WGGHideNativeFoldView(id vc) {
     UITableView *table = self;
     UIView *entry = objc_getAssociatedObject(table, kWGGSettingsEntryKey);
     if (entry && table.tableFooterView != entry) {
+        WGGLogMessage([NSString stringWithFormat:
+                       @"footer 被换成 %@ → 补挂我们的设置入口",
+                       NSStringFromClass([table.tableFooterView class])]);
         table.tableFooterView = entry;
     }
     // 微信 reload 时可能把置顶折叠栏重新显示出来 —— 顺手再藏一次
@@ -583,9 +586,10 @@ static void WGGHideNativeFoldView(id vc) {
 /// alloc BaseMsgContentViewController → 塞 m_nsUsrName / m_nsNickName → push。
 /// 优先用 setter（正确 retain）；没有 setter 才 object_setIvar + retain（MRC 手动接管）。
 /// 注意 fromVC 用 id：%hook 里 self 是"无头文件"的类，编译器不认为它是 UIViewController。
-static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
+/// 返回 YES = 已经把聊天页推上去了。
+static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
     Class chatCls = NSClassFromString(@"BaseMsgContentViewController");
-    if (!chatCls || username.length == 0) return;
+    if (!chatCls || username.length == 0) return NO;
     id chat = [[chatCls alloc] init];   // +1
 
     SEL setUsr = NSSelectorFromString(@"setM_nsUsrName:");
@@ -604,18 +608,26 @@ static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
     }
 
     UINavigationController *nav = ((UIViewController *)fromVC).navigationController;
-    if (nav) {
-        [nav pushViewController:chat animated:YES];
+    if (!nav) {
+        [chat release];   // 没导航栈推不了
+        return NO;
     }
-    [chat release];   // push 已被 nav retain；没有 nav 就直接释放
+    [nav pushViewController:chat animated:YES];
+    [chat release];   // push 已被 nav retain
+    return YES;
 }
 
 %hook NewMainFrameViewController
 
-// 1) 行数 = 表头数 + 展开分组的会话数
+// 1) 行数：第 0 区 = 表头数 + 展开分组的会话数；
+//    其余区（置顶区/常规区/折叠区）清零 —— 点击日志实锤微信列表是
+//    多分区的（微信索引=[第2节 第1行]），不清零它们会继续按微信原样
+//    渲染 = 用户看到的"官方一份 + 插件一份"。
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    if (section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
-        return (NSInteger)[WGGQQList virtualRowsForVC:self].count;
+    BOOL group = [WGGQQList shouldGroupTable:tableView ofVC:self];
+    if (group) {
+        if (section == 0) return (NSInteger)[WGGQQList virtualRowsForVC:self].count;
+        return 0;
     }
     return %orig;
 }
@@ -624,7 +636,13 @@ static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 //    ⚠️ 不 %orig！日志实锤：微信的 cellForRow 只渲染自己显示范围内的小子集，
 //    映射回原下标（>它的显示数）会返回空白 cell → 组里没有聊天记录。
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+    BOOL group = [WGGQQList shouldGroupTable:tableView ofVC:self];
+    if (group) {
+        if (indexPath.section != 0) {
+            // 行数已清零，正常不会被问到；防御性返回空白
+            return [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                           reuseIdentifier:nil] autorelease];
+        }
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
@@ -649,16 +667,41 @@ static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
     return %orig;
 }
 
-// 3) 行高：表头行固定（44 + 行间距设置）；会话行自绘固定 64
+// 3) 行高：表头行固定（44 + 行间距设置）；会话行自绘固定 64；其余区 1pt
 - (CGFloat)tableView:(UITableView *)tableView heightForRowAtIndexPath:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+    BOOL group = [WGGQQList shouldGroupTable:tableView ofVC:self];
+    if (group) {
+        if (indexPath.section != 0) return 1.0;
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
             if (v.isHeader) return [WGGQQList headerHeight];
             return [WGGQQList conversationHeight];   // 不再问微信（它只认自己的小子集）
         }
+        return [WGGQQList conversationHeight];
     }
+    return %orig;
+}
+
+// 3.5) 分区头/尾：除第 0 区外全部压扁（微信的置顶区标题"折叠的聊天"之类
+//      不再占位），保证视觉上只剩分组列表
+- (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section {
+    if (section != 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) return 0.001;
+    return %orig;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section {
+    if (section != 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) return 0.001;
+    return %orig;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section {
+    if (section != 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) return nil;
+    return %orig;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForFooterInSection:(NSInteger)section {
+    if (section != 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) return nil;
     return %orig;
 }
 
@@ -679,26 +722,27 @@ static void WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
             id conv = [WGGQQList conversationForVC:self row:v];
             NSString *username = conv ? [WGGGroupStore keyForConversation:conv] : nil;
 
-            // 首选：把用户名换成微信自己的行号（原生 didSelect 只认自己的行号空间，
-            // 我们插入表头后行号错位，直接 %orig 映射会静默失效 = "点不开"）
+            // 首选：直接构造聊天页。原生 didSelect 里有越界检查（它问的是
+            // 表格自己的行数——我们已把微信区清零，它的行号会被判成
+            // "意外点击"而静默跳过），所以不能再依赖 %orig。
             NSIndexPath *nativeIP = nil;
             SEL selIP = NSSelectorFromString(@"indexPathOfSessionUserName:");
             if (username.length > 0 && [self respondsToSelector:selIP]) {
                 nativeIP = ((NSIndexPath * (*)(id, SEL, id))objc_msgSend)(self, selIP, username);
             }
+            BOOL opened = NO;
+            if (username.length > 0) {
+                opened = WGGOpenChatDirect(self, username,
+                                           [WGGQQList displayNameForConversation:conv] ?: @"");
+            }
             WGGLogMessage([NSString stringWithFormat:
-                           @"点会话 虚拟行=%ld 用户名=%@ 微信索引=[第%ld节 第%ld行]",
+                           @"点会话 虚拟行=%ld 用户名=%@ 直开=%@ 微信索引=[第%ld节 第%ld行]",
                            (long)indexPath.row, username,
+                           opened ? @"✓" : @"✗",
                            nativeIP ? (long)nativeIP.section : -1L,
                            nativeIP ? (long)nativeIP.row : -1L]);
-            if (nativeIP) {
-                %orig(tableView, nativeIP);
-                return;
-            }
-            // 兜底：微信自己的行号拿不到 → 直接构造聊天页
-            if (username.length > 0) {
-                WGGOpenChatDirect(self, username,
-                                  [WGGQQList displayNameForConversation:conv] ?: @"");
+            if (!opened && nativeIP) {
+                %orig(tableView, nativeIP);   // 直开失败 → 用微信自己的行号走原生
             }
             return;
         }
