@@ -814,6 +814,19 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
     return %orig;
 }
 
+// 3.7) 渲染防线【0.4.1 闪退实锤】：694 条合并成功后、渲染前必死——
+//      微信自己的 willDisplayCell 会拿"我们的虚拟 indexPath"（第0区
+//      第300行）去索引它自己只有 15 条的可见数据 → 数组越界硬崩。
+//      15 条时代永远不越界，收编一成功就炸（WCGlass 的二进制也证实
+//      这类回调必须拦）。第 0 区全部拦下不 %orig：cell 都是我们自己
+//      画的，不需要微信再配置。
+- (void)tableView:(UITableView *)tableView willDisplayCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return;   // 绝不让微信碰我们的行
+    }
+    %orig;
+}
+
 // 4) 点击：表头行 → 折叠/展开；会话行 → 映射后 %orig（正常进聊天）
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
@@ -906,7 +919,7 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.4.1 loaded（池外返回修闪退 + 身份键缓存防卡 + 694 条收编已通）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.2 loaded（willDisplay 防线：渲染期越界崩修复）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
