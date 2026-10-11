@@ -32,6 +32,7 @@ static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys);
     UILabel *_msgLabel;
     UILabel *_timeLabel;
     UILabel *_badgeLabel;
+    NSString *_wggKey;      // 当前会话键（长按归类用）
 }
 - (void)configureWithConversation:(id)conversation;
 @end
@@ -119,7 +120,7 @@ static NSString * const kWGGHeaderReuseID = @"WGGQQSectionHeader";
         //   UltraThinMaterialLight 毛玻璃 + 白色半透明 tint + 连续圆角 + 高光描边
         _blur = [[UIView alloc] init];                       // +1
         _blur.translatesAutoresizingMaskIntoConstraints = NO;
-        _blur.layer.cornerRadius = 12.0;
+        _blur.layer.cornerRadius = 14.0;
         _blur.layer.cornerCurve = kCACornerCurveContinuous;  // 连续圆角（液态感）
         _blur.layer.masksToBounds = YES;
         _blur.layer.borderWidth = 0.5;
@@ -267,8 +268,8 @@ static NSUInteger gNativeRows[8] = {0};
     NSMutableArray *rows = [NSMutableArray array];          // 自动释放，调用方立即使用
     NSArray<WGGSection *> *secs = [store sectionsForConversations:convs];
     for (WGGSection *s in secs) {
-        // 主列表只用三个自动分组（自定义分组不进主列表，避免同一会话重复出现）
-        if (![store isAutoGroup:s.name]) continue;
+        // 0.4.0：自定义分组也进主列表（长按归类后直接可见）。
+        // 一个会话可同时出现在自动分组和自定义分组——QQ 式多列表，符合直觉。
         WGGVirtualRow *h = [WGGVirtualRow headerRowWithGroupName:s.name
                                                            count:s.count
                                                        collapsed:s.collapsed];
@@ -418,7 +419,13 @@ static NSUInteger gNativeRows[8] = {0};
 }
 
 + (CGFloat)conversationHeight {
-    return 64.0;
+    // 行间距滑条（设置页"分组行间距"）同时作用于会话行：
+    // 64 基础 + 0~24 滑条，夹在 64~96。
+    CGFloat spacing = [WGGGroupStore shared].rowSpacing;
+    CGFloat h = 64.0 + spacing;
+    if (h < 64.0) h = 64.0;
+    if (h > 96.0) h = 96.0;
+    return h;
 }
 
 + (NSString *)displayNameForConversation:(id)conversation {
@@ -607,8 +614,85 @@ static UIColor *WGGColorForName(NSString *name) {
         ]];
         [c1 release];
         [c2 release];
+
+        // 长按 = 归类到自定义分组（0.4.0 新功能）
+        UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
+            initWithTarget:self action:@selector(wggLongPress:)];
+        [self addGestureRecognizer:lp];
+        [lp release];
     }
     return self;
+}
+
+#pragma mark 长按归类
+
+- (void)wggLongPress:(UILongPressGestureRecognizer *)gr {
+    if (gr.state != UIGestureRecognizerStateBegan) return;
+    if (!_wggKey.length) return;
+    WGGGroupStore *store = [WGGGroupStore shared];
+    if (!store.longPressMenuEnabled) return;
+
+    NSString *who = _nameLabel.text.length ? _nameLabel.text : @"该会话";
+
+    // 只列自定义分组（自动分组是按类型实时归的，不收手选）
+    NSArray *autoNames = @[ WGGGroupAllName, WGGGroupFriendsName,
+                            WGGGroupGroupsName, WGGGroupOfficialName ];
+    NSMutableArray *custom = [NSMutableArray array];
+    for (NSString *n in [store allGroupNames]) {
+        if ([autoNames containsObject:n]) continue;
+        [custom addObject:n];
+    }
+
+    NSString *hint = custom.count > 0
+        ? [NSString stringWithFormat:@"把「%@」归类到：", who]
+        : @"还没有自定义分组。\n先到 ⚙ 设置 → 自定义分组 新建一个。";
+    UIAlertController *sheet = [UIAlertController
+        alertControllerWithTitle:@"归类"
+                         message:hint
+                  preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSString *n in custom) {
+        BOOL inGroup = [[store groupsForChatKey:_wggKey] containsObject:n];
+        NSString *title = inGroup ? [NSString stringWithFormat:@"✓ %@", n] : n;
+        NSString *key = [_wggKey copy];         // block 里用局部副本，稳
+        NSString *group = [n copy];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault
+            handler:^(UIAlertAction *a) {
+                if ([[store groupsForChatKey:key] containsObject:group]) {
+                    [store removeChatKey:key fromGroup:group];
+                } else {
+                    [store addChatKey:key toGroup:group];
+                }
+                // 刷新列表：从 cell 往上找所属表
+                UITableView *tv = (UITableView *)self.superview;
+                while (tv && ![tv isKindOfClass:[UITableView class]]) tv = (UITableView *)tv.superview;
+                [tv reloadData];
+            }]];
+        [key release];
+        [group release];
+    }
+
+    if ([[store groupsForChatKey:_wggKey] count] > 0) {
+        NSString *key = [_wggKey copy];
+        [sheet addAction:[UIAlertAction actionWithTitle:@"移出所有归类"
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction *a) {
+            [store removeChatKeyFromAllGroups:key];
+            UITableView *tv = (UITableView *)self.superview;
+            while (tv && ![tv isKindOfClass:[UITableView class]]) tv = (UITableView *)tv.superview;
+            [tv reloadData];
+        }]];
+        [key release];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"取消"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+
+    // 从 keyWindow 顶端弹（和设置入口同路，实锤不崩）
+    UIWindow *keyWin = [UIApplication sharedApplication].keyWindow;
+    UIViewController *top = keyWin.rootViewController;
+    while (top.presentedViewController) top = top.presentedViewController;
+    if (top) [top presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)configureWithConversation:(id)conversation {
@@ -618,8 +702,14 @@ static UIColor *WGGColorForName(NSString *name) {
         _msgLabel.text = @" ";
         _timeLabel.text = @" ";
         _badgeLabel.hidden = YES;
+        [_wggKey release];
+        _wggKey = nil;
         return;
     }
+
+    // 当前会话键：长按归类的目标
+    [_wggKey release];
+    _wggKey = [[WGGGroupStore keyForConversation:conversation] copy];
 
     NSString *name = [WGGQQList displayNameForConversation:conversation];
     _nameLabel.text = name.length ? name : @"会话";
@@ -644,6 +734,7 @@ static UIColor *WGGColorForName(NSString *name) {
         @"m_nsTime", @"time", @"m_nsTimeStr", @"m_timeString", @"m_nsTimeString", @"timeString", @"m_timeStr", @"timeText"]);
     if (!time) {
         NSNumber *ts = WGGReadNum(conversation, @[
+            @"m_uLastTime",   // MMSessionInfo（探测实锤的时间字段）
             @"m_uiLastMsgTime", @"lastMsgTime", @"m_lastMsgTime", @"m_uiTimeStamp",
             @"m_uiCreateTime", @"createTime", @"m_uiTime", @"timestamp"]);
         if (ts) {
@@ -662,6 +753,7 @@ static UIColor *WGGColorForName(NSString *name) {
     _timeLabel.text = time.length ? time : @" ";
 
     NSNumber *unread = WGGReadNum(conversation, @[
+        @"m_uUnReadCount",   // MMSessionInfo
         @"m_uiUnReadCount", @"unReadCount", @"m_unReadCount", @"m_uiCount"]);
     NSUInteger n = unread ? unread.unsignedIntegerValue : 0;
     if (n > 0) {
@@ -680,6 +772,7 @@ static UIColor *WGGColorForName(NSString *name) {
     [_msgLabel release];
     [_timeLabel release];
     [_badgeLabel release];
+    [_wggKey release];
     [super dealloc];
 }
 

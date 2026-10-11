@@ -660,13 +660,29 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
 }
 
 + (NSString *)displayNameForConversation:(id)conversation {
-    // 日志实锤（8.0.78 FakeMainFrameCellData 的 7 个 ivar）：
-    //   昵称真实字段 = _textForNameLabel（如 "小丸子"）
+    // 日志实锤（8.0.78）：
+    //   FakeMainFrameCellData → _textForNameLabel（如 "小丸子"）
+    //   MMSessionInfo（收编对象）→ 自身只有 m_nsUserName；昵称在 m_contact
+    //   （CContact，48 ivar 探测清单）里。
     id v = WGGSafeValue(conversation, @[ @"_textForNameLabel", @"textForNameLabel",
                                          @"nickName", @"m_nsNickName", @"displayName",
                                          @"title", @"name", @"m_nsRemark" ]);
     if ([v isKindOfClass:[NSString class]] && [(NSString *)v length] > 0) return v;
-    return nil;
+
+    // MMSessionInfo 兜底：m_contact（CContact）→ m_nsNickName / nickName
+    if (conversation) {
+        @try {
+            id contact = WGGSafeValue(conversation, @[ @"m_contact", @"contact" ]);
+            if (contact && contact != conversation) {
+                id n = WGGSafeValue(contact, @[ @"m_nsNickName", @"nickName",
+                                                @"m_nsRemark", @"m_nsHeadHdUrl" ]);
+                if ([n isKindOfClass:[NSString class]] && [(NSString *)n length] > 0) return n;
+            }
+        } @catch (NSException *e) { /* 兜底失败就走用户名 */ }
+    }
+
+    // 最后兜底：用户名本身（wxid_xxx 也能看出是谁）
+    return [self keyForConversation:conversation];
 }
 
 #pragma mark - 过滤

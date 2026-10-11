@@ -716,6 +716,29 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // 2) cell：表头行自己画；会话行用自绘"液态玻璃"cell ——
 //    ⚠️ 不 %orig！日志实锤：微信的 cellForRow 只渲染自己显示范围内的小子集，
 //    映射回原下标（>它的显示数）会返回空白 cell → 组里没有聊天记录。
+// 液态玻璃底：微信首页是纯白，玻璃胶囊贴白底≈隐形（0.3.9 用户反馈"丑"）。
+// 给表格铺一层柔和的蓝→紫→粉渐变，玻璃才有东西可糊——设置页同理。
+static void WGGInstallLiquidBackground(UITableView *tv) {
+    static BOOL gBgDone = NO;
+    if (gBgDone || !tv) return;
+    gBgDone = YES;
+    @try {
+        UIView *bg = [[UIView alloc] initWithFrame:tv.bounds];      // +1
+        bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        CAGradientLayer *g = [CAGradientLayer layer];               // 便捷构造：+0 自动释放
+        g.frame = CGRectMake(0, 0, 100, 100);                       // backgroundView 撑满即可
+        g.startPoint = CGPointMake(0.0, 0.0);
+        g.endPoint = CGPointMake(1.0, 1.0);
+        g.colors = @[(id)[UIColor colorWithRed:0.86 green:0.91 blue:1.00 alpha:1.0].CGColor,
+                     (id)[UIColor colorWithRed:0.94 green:0.90 blue:1.00 alpha:1.0].CGColor,
+                     (id)[UIColor colorWithRed:1.00 green:0.91 blue:0.95 alpha:1.0].CGColor];
+        [bg.layer addSublayer:g];                                   // bg.layer 已持有，不 release
+        tv.backgroundView = bg;
+        tv.backgroundColor = [UIColor clearColor];
+        [bg release];                                               // tv 已持有
+    } @catch (NSException *e) { /* 背景失败不影响功能 */ }
+}
+
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     BOOL group = [WGGQQList shouldGroupTable:tableView ofVC:self];
     if (group) {
@@ -724,6 +747,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
             return [[[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
                                            reuseIdentifier:nil] autorelease];
         }
+        WGGInstallLiquidBackground(tableView);
         NSArray *rows = [WGGQQList virtualRowsForVC:self];
         if (indexPath.row < (NSInteger)rows.count) {
             WGGVirtualRow *v = rows[(NSUInteger)indexPath.row];
@@ -882,7 +906,7 @@ static BOOL WGGOpenChatDirect(id fromVC, NSString *username, NSString *nick) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.3.9 loaded（双方案全量收编+黄金验证 + 入口弃响应链）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.0 loaded（探测同款收编 + 液态玻璃底 + 长按归类 + 自定义分组进列表）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
