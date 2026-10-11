@@ -637,6 +637,54 @@ static void WGGHideNativeFoldView(id vc) {
     }
 }
 
+// 定时器防线【WCGlass 同款思路】：微信的 m_updateTimeLabelTimer 会定期
+// 遍历"可见行"去索引它自己的会话数组——列表滚到第 300 行时（我们虚拟
+// 行）它就是越界崩。首页分组激活期间，把可见行里的第 0 区过滤掉，
+// 微信内部遍历就永远看不到我们的行。
+- (NSArray *)indexPathsForVisibleRows {
+    NSArray *orig = %orig;
+    if (![WGGQQList isHomeGroupingActive]) return orig;
+    if (![NSStringFromClass([self class]) isEqualToString:@"MainFrameTableView"]) return orig;
+    NSMutableArray *filtered = nil;
+    for (NSIndexPath *ip in orig) {
+        if (ip.section == 0) {
+            if (!filtered) {
+                filtered = [NSMutableArray array];
+                for (NSIndexPath *p in orig) {
+                    if (p.section != 0) [filtered addObject:p];
+                }
+            }
+        }
+    }
+    return filtered ? filtered : orig;
+}
+
+- (NSArray *)visibleCells {
+    NSArray *orig = %orig;
+    if (![WGGQQList isHomeGroupingActive]) return orig;
+    if (![NSStringFromClass([self class]) isEqualToString:@"MainFrameTableView"]) return orig;
+    // 只保留微信自己的 cell 类；我们的玻璃 cell 不给微信的遍历逻辑看到
+    Class nativeCell = objc_getClass("NewMainFrameCell");
+    Class nativeItem = objc_getClass("MainFrameItemView");
+    NSMutableArray *filtered = nil;
+    for (UIView *c in orig) {
+        BOOL native = (nativeCell && [c isKindOfClass:nativeCell]) ||
+                      (nativeItem && [c isKindOfClass:nativeItem]);
+        if (!native) {
+            if (!filtered) {
+                filtered = [NSMutableArray array];
+                for (id p in orig) {
+                    if ((nativeCell && [p isKindOfClass:nativeCell]) ||
+                        (nativeItem && [p isKindOfClass:nativeItem])) {
+                        [filtered addObject:p];
+                    }
+                }
+            }
+        }
+    }
+    return filtered ? filtered : orig;
+}
+
 %end
 
 // ===========================================================================
@@ -876,6 +924,95 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
     return %orig;
 }
 
+// 3.9) 终极防线【WCGlass 同款全量清单】：微信列表的每个"带 indexPath"
+//      的回调都可能拿我们的虚拟行去索引它自己的小数组。0.4.3 拦了
+//      willDisplay/didEndDisplaying/highlight/select/estimated 之后，
+//      还剩：滑动操作、编辑态、长按预览菜单（用户长按测归类时微信
+//      的 contextMenu 也在读数据 = 崩溃头号嫌疑）。全部一次拦完：
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return nil;   // 我们的行不给微信滑菜单
+    }
+    return %orig;
+}
+
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView leadingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return nil;
+    }
+    return %orig;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canEditRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (void)tableView:(UITableView *)tableView commitEditingStyle:(UITableViewCellEditingStyle)editingStyle forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return;
+    }
+    %orig;
+}
+
+- (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return UITableViewCellEditingStyleNone;
+    }
+    return %orig;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (NSIndexPath *)tableView:(UITableView *)tableView targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath toProposedIndexPath:(NSIndexPath *)proposedIndexPath {
+    if (sourceIndexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return nil;   // 禁止移动（编辑态本来就被 canEdit 挡死）
+    }
+    return %orig;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForDeleteConfirmationButtonForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return @"";
+    }
+    return %orig;
+}
+
+- (UIContextMenuConfiguration *)tableView:(UITableView *)tableView contextMenuConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath point:(CGPoint)point {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return nil;   // 长按预览 = 0.4.2/0.4.3 崩溃头号嫌疑，彻底断供
+    }
+    return %orig;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldShowMenuForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (BOOL)tableView:(UITableView *)tableView canPerformAction:(SEL)action forRowAtIndexPath:(NSIndexPath *)indexPath withSender:(id)sender {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (void)tableView:(UITableView *)tableView performAction:(SEL)action forRowAtIndexPath:(NSIndexPath *)indexPath withSender:(id)sender {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return;
+    }
+    %orig;
+}
+
 // 4) 点击：表头行 → 折叠/展开；会话行 → 映射后 %orig（正常进聊天）
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
@@ -968,7 +1105,7 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.4.3 loaded（全量回调防线：didEndDisplaying/highlight/select/estimated 全拦）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.4 loaded（WCGlass 同款全量防线：swipe/edit/contextMenu/visibleRows 全拦）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

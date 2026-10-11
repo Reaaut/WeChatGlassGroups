@@ -42,6 +42,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// 该不该干预这张表（分组总开关开 + 是首页主表 + 不在搜索态）。
 + (BOOL)shouldGroupTable:(UITableView *)tableView ofVC:(id)vc;
 
+/// 首页分组是否处于激活态（shouldGroupTable 对 MainFrameTableView 的
+/// 最近一次判定结果）。定时器防线用：激活时过滤掉可见行里的第 0 区，
+/// 防止微信内部遍历用我们的虚拟行索引它自己的小数组。
++ (BOOL)isHomeGroupingActive;
+
 /// 虚拟行表（内部按"会话数 + 折叠版本号"缓存，reload 一轮只用建一次）。
 + (NSArray<WGGVirtualRow *> *)virtualRowsForVC:(id)vc;
 

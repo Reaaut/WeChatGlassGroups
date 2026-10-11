@@ -244,7 +244,21 @@ static NSUInteger gRowsCacheVersion = 0;
 
 @implementation WGGQQList
 
+static BOOL gHomeGroupingActive = NO;   // 首页分组激活态（定时器防线用）
+
++ (BOOL)isHomeGroupingActive {
+    return gHomeGroupingActive;
+}
+
 + (BOOL)shouldGroupTable:(UITableView *)tableView ofVC:(id)vc {
+    BOOL r = [self wgg_shouldGroupTableInner:tableView ofVC:vc];
+    if ([NSStringFromClass([tableView class]) isEqualToString:@"MainFrameTableView"]) {
+        gHomeGroupingActive = r;   // 持续刷新（搜索态/开关切换都即时反映）
+    }
+    return r;
+}
+
++ (BOOL)wgg_shouldGroupTableInner:(UITableView *)tableView ofVC:(id)vc {
     if (!tableView || !vc) return NO;
     WGGGroupStore *store = [WGGGroupStore shared];
     if (!store.enabled) return NO;
