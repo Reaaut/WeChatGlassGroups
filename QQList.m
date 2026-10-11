@@ -237,6 +237,11 @@ static NSTimeInterval gLastToggleTime = 0.0;
 /// 置顶/折叠区的会话不在 front 数组里，但对账必须算上它们。
 static NSUInteger gNativeRows[8] = {0};
 
+/// 虚拟行身份键缓存（0.4.1）：合并数组身份 + 分组状态版本。+1，MRC。
+static NSArray *gRowsCache = nil;
+static NSArray *gRowsCacheKeyConv = nil;   // +1：键=收编合并数组对象
+static NSUInteger gRowsCacheVersion = 0;
+
 @implementation WGGQQList
 
 + (BOOL)shouldGroupTable:(UITableView *)tableView ofVC:(id)vc {
@@ -258,13 +263,19 @@ static NSUInteger gNativeRows[8] = {0};
 }
 
 + (NSArray<WGGVirtualRow *> *)virtualRowsForVC:(id)vc {
-    // 【不缓存！】微信的会话数组是活的：来一条消息就重排一次。
-    // 缓存里存的是"下标快照"，数组一重排，旧下标就指向别人——
-    // 同一个聊天在分组里出现多次（用户实测"多添加一样的"）就是这么来的。
-    // 15~30 个会话实时重建的成本可以忽略，每次调用都现算，永远新鲜。
+    // 【0.4.1 身份键缓存】694 条会话下每次行查询都全量重建 = O(n²)
+    // （一次布局几百次查询，卡死）。缓存键 = 合并数组对象身份 + 分组状态
+    // 版本（折叠/归类/建删分组任一变化都会变版本）。键不变 → 分段必然
+    // 相同，复用零新鲜度损失；微信刷新（数组重建/数量变）→ 身份变 →
+    // 自动重算。老的"下标快照缓存"炸在数组原地重排——身份键天然免疫
+    // （数组对象一变键就变）。
     NSArray *convs = [WGGConversationSource conversationsForViewController:vc];
 
     WGGGroupStore *store = [WGGGroupStore shared];
+    if (gRowsCache && gRowsCacheKeyConv == convs && gRowsCacheVersion == store.stateVersion) {
+        return gRowsCache;
+    }
+
     NSMutableArray *rows = [NSMutableArray array];          // 自动释放，调用方立即使用
     NSArray<WGGSection *> *secs = [store sectionsForConversations:convs];
     for (WGGSection *s in secs) {
@@ -311,6 +322,13 @@ static NSUInteger gNativeRows[8] = {0};
     WGGVirtualRow *sr = [WGGVirtualRow settingsRow];
     [rows addObject:sr];
     [sr release];
+
+    // 存缓存（MRC：先放新值；旧值 release）
+    [gRowsCache release];
+    gRowsCache = [rows retain];
+    [gRowsCacheKeyConv release];
+    gRowsCacheKeyConv = [convs retain];
+    gRowsCacheVersion = store.stateVersion;
 
     return rows;
 }

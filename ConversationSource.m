@@ -146,6 +146,10 @@ static unsigned long long gAllSessionCount = 0;  // 上次枚举数量
 static BOOL gAllSessionsDisabled = NO;           // 不安全 → 永久禁用（B 的总闸）
 static BOOL gPlanADisabled = NO;                 // A 的独立闸（A 失败不连坐 B）
 static BOOL gSkipLogged = NO;                    // 跳过原因只打一次
+static NSArray *gMergedCache = nil;              // +1：合并结果缓存（front 身份键）
+static NSArray *gMergedCacheFront = nil;         // +1：缓存键（front 对象身份）
+static NSUInteger gMergedCacheFrontCount = 0;    // front 数量辅助键
+static CFAbsoluteTime gMergedCacheTime = 0;      // TTL 兜底（防原地改内容）
 
 /// 判断方法是不是"整数索引"参数。真正的参数编码从 enc[3] 开始
 /// （enc[0]=返回值，enc[1]=self，enc[2]=cmd）。
@@ -161,36 +165,37 @@ static BOOL WGGMethodTakesIntegerArg(id target, SEL sel) {
 
 /// 方案 A：枚举 filtered 全列表（参数必须是整数索引）。
 /// 注意：A 的失败只关自己的闸（gPlanADisabled），绝不连坐 B。
+/// 【0.4.1 血泪】绝不能把函数包在 @autoreleasepool 里再 return 便捷构造的
+/// 数组——池子在 return 时排空，调用方拿到野指针（0.4.0 日志实锤：
+/// 成功日志打出后当场崩，就是它）。临时对象交给外层池，量小无害。
 static NSArray *WGGEnumerateFilteredSessions(id logic) {
-    @autoreleasepool {
-        if (!logic || gPlanADisabled) return nil;
-        SEL selCnt = NSSelectorFromString(@"getFilteredSessionCount");
-        SEL selGet = NSSelectorFromString(@"getFilteredSessionInfo:");
-        if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selGet]) return nil;
-        if (!WGGMethodTakesIntegerArg(logic, selGet)) {
-            gPlanADisabled = YES;
-            WGGLogMessage(@"全量收编A：getFilteredSessionInfo: 类型编码读不出，跳过（走B）");
-            return nil;
-        }
-
-        unsigned long long total = ((unsigned long long (*)(id, SEL))objc_msgSend)(logic, selCnt);
-        if (total <= 0 || total > 5000) return nil;
-
-        NSMutableArray *out = [NSMutableArray array];
-        @try {
-            typedef id (*GetFn)(id, SEL, unsigned long long);
-            GetFn fn = (GetFn)objc_msgSend;
-            for (unsigned long long i = 0; i < total; i++) {
-                id s = fn(logic, selGet, i);
-                if (s) [out addObject:s];
-            }
-        } @catch (NSException *e) {
-            WGGLogMessage([NSString stringWithFormat:@"全量收编A：枚举异常（跳过，走B）：%@", e]);
-            gPlanADisabled = YES;
-            return nil;
-        }
-        return out;
+    if (!logic || gPlanADisabled) return nil;
+    SEL selCnt = NSSelectorFromString(@"getFilteredSessionCount");
+    SEL selGet = NSSelectorFromString(@"getFilteredSessionInfo:");
+    if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selGet]) return nil;
+    if (!WGGMethodTakesIntegerArg(logic, selGet)) {
+        gPlanADisabled = YES;
+        WGGLogMessage(@"全量收编A：getFilteredSessionInfo: 类型编码读不出，跳过（走B）");
+        return nil;
     }
+
+    unsigned long long total = ((unsigned long long (*)(id, SEL))objc_msgSend)(logic, selCnt);
+    if (total <= 0 || total > 5000) return nil;
+
+    NSMutableArray *out = [NSMutableArray array];
+    @try {
+        typedef id (*GetFn)(id, SEL, unsigned long long);
+        GetFn fn = (GetFn)objc_msgSend;
+        for (unsigned long long i = 0; i < total; i++) {
+            id s = fn(logic, selGet, i);
+            if (s) [out addObject:s];
+        }
+    } @catch (NSException *e) {
+        WGGLogMessage([NSString stringWithFormat:@"全量收编A：枚举异常（跳过，走B）：%@", e]);
+        gPlanADisabled = YES;
+        return nil;
+    }
+    return out;
 }
 
 /// 方案 B（0.4.0 · 探测同款）：NSIndexPath 直接枚举。
@@ -200,63 +205,64 @@ static NSArray *WGGEnumerateFilteredSessions(id logic) {
 /// NSIndexPath 本来就能用，0.3.9 的类型编码检查反而误杀了
 /// （method_getTypeEncoding 对微信方法可能返回 NULL）。
 /// 完全照抄探测的调用方式，加"可读键过半"验证兜底。
+/// 【0.4.1 血泪】绝不能包 @autoreleasepool 再 return 便捷构造数组：
+/// 0.4.0 日志（枚举=694 ✓ 之后戛然而止）实锤——池子在 return 时排空，
+/// out 被销毁，调用方拿野指针 → 当场崩。临时对象交外层池，量小无害。
 static NSArray *WGGEnumerateViaIndexPath(id vc, id logic) {
-    @autoreleasepool {
-        if (!logic || gAllSessionsDisabled) return nil;
-        SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
-        SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
-        if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selAt]) {
-            if (!gSkipLogged) {
-                gSkipLogged = YES;
-                WGGLogMessage(@"全量收编B：逻辑层缺分区方法，停用");
-            }
-            return nil;
+    if (!logic || gAllSessionsDisabled) return nil;
+    SEL selCnt = NSSelectorFromString(@"getSessionCountForSection:");
+    SEL selAt  = NSSelectorFromString(@"getSessionInfoAtIndexPath:");
+    if (![logic respondsToSelector:selCnt] || ![logic respondsToSelector:selAt]) {
+        if (!gSkipLogged) {
+            gSkipLogged = YES;
+            WGGLogMessage(@"全量收编B：逻辑层缺分区方法，停用");
         }
+        return nil;
+    }
 
-        @try {
-            typedef NSInteger (*CntFn)(id, SEL, NSUInteger);
-            typedef id (*AtFn)(id, SEL, id);
-            CntFn cntFn = (CntFn)objc_msgSend;
-            AtFn atFn = (AtFn)objc_msgSend;
+    @try {
+        typedef NSInteger (*CntFn)(id, SEL, NSUInteger);
+        typedef id (*AtFn)(id, SEL, id);
+        CntFn cntFn = (CntFn)objc_msgSend;
+        AtFn atFn = (AtFn)objc_msgSend;
 
-            NSMutableArray *out = [NSMutableArray array];
-            NSMutableSet *keys = [[NSMutableSet alloc] init];
-            int emptyStreak = 0;
-            for (NSUInteger s = 0; s < 16; s++) {
-                NSInteger rows = cntFn(logic, selCnt, s);
-                if (rows <= 0) { if (++emptyStreak >= 3) break; continue; }
-                emptyStreak = 0;
-                if (rows > 2000) rows = 2000;   // 保险丝
-                for (NSUInteger r = 0; r < (NSUInteger)rows; r++) {
-                    NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
-                    id sess = atFn(logic, selAt, ip);
-                    if (sess) {
-                        [out addObject:sess];
-                        NSString *k = [WGGGroupStore keyForConversation:sess];
-                        if (k) [keys addObject:k];
-                    }
+        NSMutableArray *out = [NSMutableArray array];
+        NSMutableSet *keys = [[NSMutableSet alloc] init];
+        int emptyStreak = 0;
+        for (NSUInteger s = 0; s < 16; s++) {
+            NSInteger rows = cntFn(logic, selCnt, s);
+            if (rows <= 0) { if (++emptyStreak >= 3) break; continue; }
+            emptyStreak = 0;
+            if (rows > 2000) rows = 2000;   // 保险丝
+            for (NSUInteger r = 0; r < (NSUInteger)rows; r++) {
+                NSIndexPath *ip = [NSIndexPath indexPathForRow:r inSection:s];
+                id sess = atFn(logic, selAt, ip);
+                if (sess) {
+                    [out addObject:sess];
+                    NSString *k = [WGGGroupStore keyForConversation:sess];
+                    if (k) [keys addObject:k];
                 }
             }
-
-            // 【验证】至少 50 条（用户实际 ~695），可读键过半（防空壳污染分组）
-            NSUInteger keyCount = keys.count;
-            [keys release];
-            if (out.count >= 50 && keyCount * 2 >= out.count) {
-                WGGLogMessage([NSString stringWithFormat:
-                               @"全量收编B：枚举=%lu 可读键=%lu ✓",
-                               (unsigned long)out.count, (unsigned long)keyCount]);
-                return out;
-            }
-            WGGLogMessage([NSString stringWithFormat:
-                           @"全量收编B：枚举=%lu 可读键=%lu 验证不过，停用（对账行兜底）",
-                           (unsigned long)out.count, (unsigned long)keyCount]);
-            gAllSessionsDisabled = YES;
-            return nil;
-        } @catch (NSException *e) {
-            WGGLogMessage([NSString stringWithFormat:@"全量收编B：异常（停用）：%@", e]);
-            gAllSessionsDisabled = YES;
-            return nil;
         }
+
+        // 【验证】至少 50 条（用户实际 ~695），可读键过半（防空壳污染分组）
+        NSUInteger keyCount = keys.count;
+        [keys release];
+        if (out.count >= 50 && keyCount * 2 >= out.count) {
+            WGGLogMessage([NSString stringWithFormat:
+                           @"全量收编B：枚举=%lu 可读键=%lu ✓",
+                           (unsigned long)out.count, (unsigned long)keyCount]);
+            return out;
+        }
+        WGGLogMessage([NSString stringWithFormat:
+                       @"全量收编B：枚举=%lu 可读键=%lu 验证不过，停用（对账行兜底）",
+                       (unsigned long)out.count, (unsigned long)keyCount]);
+        gAllSessionsDisabled = YES;
+        return nil;
+    } @catch (NSException *e) {
+        WGGLogMessage([NSString stringWithFormat:@"全量收编B：异常（停用）：%@", e]);
+        gAllSessionsDisabled = YES;
+        return nil;
     }
 }
 
@@ -382,7 +388,26 @@ static NSArray *WGGMergeFrontWithAll(NSArray *front, NSArray *all) {
         }
     }
     if (gAllSessionsCache.count > 0) {
-        return WGGMergeFrontWithAll(front, gAllSessionsCache);
+        // 【0.4.1 性能】合并结果按"front 对象身份 + front 数量"缓存：
+        // 微信的 front 数组对象在一次会话里通常是同一个（原地换内容时
+        // 数量也会变），身份+数量都没变 → 合并结果必然相同，直接复用。
+        // 没有它：每次行查询都做 694 次 keyForConversation = O(n²) 卡死。
+        // 1 秒 TTL 兜底：万一微信原地改数组内容（同对象同数量），最多
+        // 旧 1 秒，肉眼不可见。
+        CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
+        if (gMergedCache && gMergedCacheFront == front &&
+            gMergedCacheFrontCount == front.count &&
+            (now - gMergedCacheTime) < 1.0) {
+            return gMergedCache;
+        }
+        NSArray *merged = WGGMergeFrontWithAll(front, gAllSessionsCache);
+        [gMergedCache release];
+        gMergedCache = [merged retain];
+        [gMergedCacheFront release];
+        gMergedCacheFront = [front retain];
+        gMergedCacheFrontCount = front.count;
+        gMergedCacheTime = now;
+        return merged;
     }
     return front;
 }

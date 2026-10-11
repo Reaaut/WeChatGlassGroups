@@ -135,6 +135,13 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
 
 @implementation WGGGroupStore
 
+// 分组状态版本号：任何影响主列表分段的变更 +1（列表缓存失效判定用）
+static NSUInteger gStateVersion = 0;
+
+- (NSUInteger)stateVersion {
+    return gStateVersion;
+}
+
 + (instancetype)shared {
     static WGGGroupStore *inst;
     static dispatch_once_t once;
@@ -379,7 +386,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             ok = YES;
         }
     }
-    if (ok) [self scheduleSave];
+    if (ok) { gStateVersion++; [self scheduleSave]; }
     return ok;
 }
 
@@ -402,7 +409,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             ok = YES;
         }
     }
-    if (ok) [self scheduleSave];
+    if (ok) { gStateVersion++; [self scheduleSave]; }
     return ok;
 }
 
@@ -429,7 +436,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             ok = YES;
         }
     }
-    if (ok) [self scheduleSave];
+    if (ok) { gStateVersion++; [self scheduleSave]; }
     return ok;
 }
 
@@ -559,7 +566,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             changed = YES;
         }
     }
-    if (changed) [self scheduleSave];
+    if (changed) { gStateVersion++; [self scheduleSave]; }
 }
 
 - (void)removeChatKey:(NSString *)key fromGroup:(NSString *)group {
@@ -573,7 +580,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             changed = YES;
         }
     }
-    if (changed) [self scheduleSave];
+    if (changed) { gStateVersion++; [self scheduleSave]; }
 }
 
 - (BOOL)toggleChatKey:(NSString *)key inGroup:(NSString *)group {
@@ -594,7 +601,7 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys);
             changed = YES;
         }
     }
-    if (changed) [self scheduleSave];
+    if (changed) { gStateVersion++; [self scheduleSave]; }
 }
 
 #pragma mark - 从微信对象取值（原始 ivar 读取 + 保护）
@@ -773,7 +780,9 @@ static id WGGSafeValue(id obj, NSArray<NSString *> *keys) {
 
 - (void)setCollapsed:(BOOL)collapsed forGroup:(NSString *)name {
     if (name.length == 0) return;
+    BOOL was = [self isCollapsedGroup:name];
     [self setSetting:@(collapsed) forKey:[self collapsedKeyForGroup:name]];
+    if (was != collapsed) gStateVersion++;   // 折叠态影响主列表分段
 }
 
 - (void)toggleCollapsedForGroup:(NSString *)name {

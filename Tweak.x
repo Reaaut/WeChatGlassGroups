@@ -906,7 +906,7 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.4.0 loaded（探测同款收编 + 液态玻璃底 + 长按归类 + 自定义分组进列表）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.1 loaded（池外返回修闪退 + 身份键缓存防卡 + 694 条收编已通）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();

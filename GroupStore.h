@@ -95,6 +95,9 @@ typedef NS_ENUM(NSInteger, WGGAutoKind) {
 
 #pragma mark 总开关
 @property (nonatomic, assign, getter=isEnabled) BOOL enabled;
+/// 分组状态版本号：任何影响主列表分段的变更（折叠切换 / 归类增删 /
+/// 自定义分组增删改名）都自增。列表层用它判定虚拟行缓存是否失效。
+@property (nonatomic, assign, readonly) NSUInteger stateVersion;
 
 #pragma mark 分组
 /// 自动分组 + 自定义分组（**不含**"全部"）。
