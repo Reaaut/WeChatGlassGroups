@@ -827,6 +827,55 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
     %orig;
 }
 
+// 3.8) 全量防线【0.4.2→0.4.3 日志实锤】：0.4.2 拦了 willDisplay 后列表
+//      渲染成功（694 行 + 折叠操作都通了），但折叠/滚动后 2 秒内又崩
+//      ——行滚出屏幕时 didEndDisplayingCell 拿虚拟 indexPath 索引微信
+//      自己的小数组，同样的越界。WCGlass 的二进制显示这类插件必须把
+//      所有带 indexPath 的回调全拦（didEndDisplaying/shouldHighlight/
+//      didHighlight/willSelect/indentationLevel/estimatedHeight），
+//      一个都不能漏。以下全部照此办理：
+- (void)tableView:(UITableView *)tableView didEndDisplayingCell:(UITableViewCell *)cell forRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return;   // 我们的 cell 自己销毁，微信不用善后
+    }
+    %orig;
+}
+
+- (BOOL)tableView:(UITableView *)tableView shouldHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return YES;   // 默认行为：高亮
+    }
+    return %orig;
+}
+
+- (void)tableView:(UITableView *)tableView didHighlightRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return;
+    }
+    %orig;
+}
+
+- (NSIndexPath *)tableView:(UITableView *)tableView willSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return indexPath;   // 默认行为：允许选中
+    }
+    return %orig;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView indentationLevelForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return 0;   // 默认行为：无缩进
+    }
+    return %orig;
+}
+
+- (CGFloat)tableView:(UITableView *)tableView estimatedHeightForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
+        return [WGGQQList conversationHeight];   // 估算值不追求精确
+    }
+    return %orig;
+}
+
 // 4) 点击：表头行 → 折叠/展开；会话行 → 映射后 %orig（正常进聊天）
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     if (indexPath.section == 0 && [WGGQQList shouldGroupTable:tableView ofVC:self]) {
@@ -919,7 +968,7 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.4.2 loaded（willDisplay 防线：渲染期越界崩修复）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.3 loaded（全量回调防线：didEndDisplaying/highlight/select/estimated 全拦）");
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
