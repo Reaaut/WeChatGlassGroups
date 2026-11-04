@@ -1,0 +1,9 @@
+Package: com.wcglass.offline
+Name: WCGlass Offline
+Version: 0.1.2
+Architecture: iphoneos-arm64
+Description: Independent offline Liquid Glass-style UI tweak for WeChat.
+Maintainer: WCGlass Offline
+Author: WCGlass Offline
+Section: Tweaks
+Depends: firmware (>= 15.0), ellekit
