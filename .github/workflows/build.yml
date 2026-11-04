@@ -150,9 +150,9 @@ jobs:
           echo "DEB=$DEB VERSION=$VERSION ARCH=$ARCH"
           test "$VERSION" = "0.4.5" || { echo "::error::版本不匹配：$VERSION"; exit 1; }
           CONTROL="$(dpkg-deb -f "$DEB")"
-          INSTALLED_SIZE_COUNT="$(printf '%s\\n' "$CONTROL" | awk -F': ' '$1=="Installed-Size"{n++} END{print n+0}')"
+          INSTALLED_SIZE_COUNT="$(echo "$CONTROL" | awk '/^Installed-Size:/{n++} END{print n+0}')"
           test "$INSTALLED_SIZE_COUNT" -eq 1 || { echo "::error::Installed-Size 字段数量异常：$INSTALLED_SIZE_COUNT"; exit 1; }
-          dpkg-deb -c "$DEB" | grep -E 'var/jb/Library/MobileSubstrate/DynamicLibraries/WeChatGlassGroups\\.dylib$' >/dev/null || {
+          dpkg-deb -c "$DEB" | grep -F 'var/jb/Library/MobileSubstrate/DynamicLibraries/WeChatGlassGroups.dylib' >/dev/null || {
             echo "::error::DEB 内缺少 Rootless 动态库安装路径"
             exit 1
           }
