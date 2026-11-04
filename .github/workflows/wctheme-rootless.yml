@@ -1,0 +1,52 @@
+name: Build WCTheme Rootless DEB
+
+on:
+  push:
+    branches: [wctheme-dev]
+    paths:
+      - 'WCTheme-source/**'
+      - '.github/workflows/wctheme-rootless.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Theos
+        uses: Randomblock1/theos-action@v1
+
+      - name: Extract WCTheme source
+        run: |
+          set -euo pipefail
+          ARCHIVE="WCTheme-source/WCTheme-src-1.8.6-dev1.zip"
+          test -s "$ARCHIVE"
+          mkdir -p build-src
+          unzip -q "$ARCHIVE" -d build-src
+          test -f build-src/WCTheme/Makefile
+          test -f build-src/WCTheme/layout/DEBIAN/control
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/build-src/WCTheme" >> "$GITHUB_ENV"
+          echo "Source files:"
+          find build-src/WCTheme -maxdepth 2 -type f | sort | head -80
+
+      - name: Build Rootless package
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          make clean || true
+          make package FINALPACKAGE=1
+          find packages -maxdepth 1 -name '*.deb' -type f -print -exec ls -lh {} \;
+          test -n "$(find packages -maxdepth 1 -name '*.deb' -type f -print -quit)"
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: WCTheme-1.8.6-dev1-rootless
+          path: build-src/WCTheme/packages/*.deb
+          if-no-files-found: error
+          retention-days: 30
