@@ -27,6 +27,9 @@ static NSNumber *WGGReadNum(id obj, NSArray<NSString *> *keys);
 /// 自绘会话行：玻璃胶囊 + 圆形首字头像 + 名字/最后消息/时间/未读红点。
 @interface WGGConversationCell : UITableViewCell {
     UIView *_capsule;
+    UIVisualEffectView *_glassEffect; // 独立材质层：透明度不影响文字
+    CAGradientLayer *_shineLayer;     // 顶部柔和高光
+    CAGradientLayer *_lowerSheenLayer;// 底部反射
     UILabel *_avatar;
     UILabel *_nameLabel;
     UILabel *_msgLabel;
@@ -556,22 +559,51 @@ static UIColor *WGGColorForName(NSString *name) {
         self.backgroundColor = [UIColor clearColor];
         self.contentView.backgroundColor = [UIColor clearColor];
 
-        // 玻璃胶囊：和设置页入口同款配方（UltraThinMaterialLight + 白 tint + 圆角14 + 高光描边）
+        // 独立玻璃材质：外层负责阴影/描边，内部 effect 自己裁切圆角。
+        // 这样既保留真实背景模糊，也不会因 masksToBounds 把浮起阴影裁掉。
         _capsule = [[UIView alloc] init];   // +1
         _capsule.translatesAutoresizingMaskIntoConstraints = NO;
         _capsule.layer.cornerRadius = 14.0;
         _capsule.layer.cornerCurve = kCACornerCurveContinuous;
-        _capsule.layer.masksToBounds = YES;
-        _capsule.layer.borderWidth = 0.5;
-        _capsule.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.5].CGColor;
-        UIVisualEffectView *effect = [[UIVisualEffectView alloc]
-                                      initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialLight]];
-        effect.translatesAutoresizingMaskIntoConstraints = NO;
-        effect.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.34];
-        effect.frame = _capsule.bounds;
-        effect.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-        [_capsule addSubview:effect];
-        [effect release];                   // 净 +1 归 _capsule
+        _capsule.layer.masksToBounds = NO;
+        _capsule.layer.borderWidth = 0.7;
+        _capsule.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:0.62].CGColor;
+        _capsule.layer.shadowColor = [UIColor colorWithWhite:0.12 alpha:1.0].CGColor;
+        _capsule.layer.shadowOpacity = 0.14;
+        _capsule.layer.shadowRadius = 9.0;
+        _capsule.layer.shadowOffset = CGSizeMake(0.0, 3.0);
+
+        _glassEffect = [[UIVisualEffectView alloc]
+                        initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterial]];
+        _glassEffect.frame = _capsule.bounds;
+        _glassEffect.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        _glassEffect.layer.cornerRadius = 14.0;
+        _glassEffect.clipsToBounds = YES;
+        _glassEffect.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
+        [_capsule addSubview:_glassEffect];
+
+        // 高光层叠在模糊材质上、文字层下方；滚动时只更新 frame，不重复创建。
+        _shineLayer = [CAGradientLayer layer];
+        _shineLayer.colors = @[
+            (id)[UIColor colorWithWhite:1.0 alpha:0.48].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.13].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.00].CGColor
+        ];
+        _shineLayer.locations = @[@0.0, @0.42, @1.0];
+        _shineLayer.startPoint = CGPointMake(0.5, 0.0);
+        _shineLayer.endPoint = CGPointMake(0.5, 1.0);
+        [_capsule.layer addSublayer:_shineLayer];
+
+        _lowerSheenLayer = [CAGradientLayer layer];
+        _lowerSheenLayer.colors = @[
+            (id)[UIColor colorWithWhite:1.0 alpha:0.00].CGColor,
+            (id)[UIColor colorWithWhite:1.0 alpha:0.16].CGColor
+        ];
+        _lowerSheenLayer.locations = @[@0.35, @1.0];
+        _lowerSheenLayer.startPoint = CGPointMake(0.5, 0.0);
+        _lowerSheenLayer.endPoint = CGPointMake(0.5, 1.0);
+        [_capsule.layer addSublayer:_lowerSheenLayer];
+
         [self.contentView addSubview:_capsule];
 
         _avatar = [[UILabel alloc] init];   // +1：圆形色块 + 首字符
@@ -656,6 +688,16 @@ static UIColor *WGGColorForName(NSString *name) {
     return self;
 }
 
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    CGRect bounds = _capsule.bounds;
+    _glassEffect.frame = bounds;
+    _shineLayer.frame = bounds;
+    _lowerSheenLayer.frame = bounds;
+    _capsule.layer.shadowPath = [UIBezierPath bezierPathWithRoundedRect:bounds
+                                                           cornerRadius:14.0].CGPath;
+}
+
 #pragma mark 长按归类
 
 - (void)wggLongPress:(UILongPressGestureRecognizer *)gr {
@@ -728,6 +770,14 @@ static UIColor *WGGColorForName(NSString *name) {
 }
 
 - (void)configureWithConversation:(id)conversation {
+    WGGGroupStore *glassStore = [WGGGroupStore shared];
+    CGFloat glassAlpha = MAX(0.2, MIN(1.0, glassStore.glassAlpha));
+    _glassEffect.alpha = glassAlpha;       // 只调整材质，不影响文字与头像
+    _shineLayer.opacity = glassAlpha;
+    _lowerSheenLayer.opacity = glassAlpha;
+    _capsule.alpha = 1.0;
+    _capsule.layer.borderColor = [UIColor colorWithWhite:1.0 alpha:(0.34 + 0.30 * glassAlpha)].CGColor;
+    _capsule.layer.shadowOpacity = (float)(0.07 + 0.08 * glassAlpha);
     if (!conversation) {
         _nameLabel.text = @" ";
         _avatar.text = @"?";
@@ -798,6 +848,7 @@ static UIColor *WGGColorForName(NSString *name) {
 }
 
 - (void)dealloc {
+    [_glassEffect release];
     [_capsule release];
     [_avatar release];
     [_nameLabel release];
