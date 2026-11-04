@@ -1,0 +1,43 @@
+name: WCTheme Rootless Build
+
+on:
+  push:
+    branches: [wctheme-dev]
+    paths:
+      - "WCTheme/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: WCTheme
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify source tree
+        run: |
+          test -f Makefile
+          test -f Tweak.x
+          test -f src/WCDock.mm
+          test -f src/WCGroup.mm
+          test -f layout/DEBIAN/control
+      - name: Install Theos
+        uses: Randomblock1/theos-action@v1
+      - name: Build Rootless DEB
+        run: |
+          make clean
+          make package FINALPACKAGE=1
+      - name: Verify package
+        run: |
+          ls -lh packages/*.deb
+          dpkg-deb -I packages/*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WCTheme-rootless-deb
+          path: WCTheme/packages/*.deb
+          if-no-files-found: error
+          retention-days: 14
