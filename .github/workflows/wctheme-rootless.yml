@@ -19,14 +19,32 @@ jobs:
       - name: Extract WCTheme source
         run: |
           set -euo pipefail
-          ARCHIVE="WCTheme-source/WCTheme-src-1.8.6-dev1.zip"
+          ARCHIVE="WCTheme-source/WCTheme-src-1.8.6-dev2.zip"
           test -s "$ARCHIVE"
           mkdir -p build-src
           unzip -q "$ARCHIVE" -d build-src
           test -f build-src/WCTheme/Makefile
           test -f build-src/WCTheme/layout/DEBIAN/control
-          sed -i 's/^Version:.*/Version: 1.8.6~dev1/' build-src/WCTheme/layout/DEBIAN/control
-          grep -q '^Version: 1.8.6~dev1$' build-src/WCTheme/layout/DEBIAN/control
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('build-src/WCTheme/src/WCGroup.mm')
+          s = p.read_text()
+          old = '''    CGFloat bottom = WCDockReservedBottom(host);
+    if (hasTable && CGRectGetMaxY(tableRect) > 0.0) {
+        bottom = MIN(CGRectGetMaxY(tableRect), bottom);
+    }
+'''
+          new = '''    // MainFrameTableView bounds may be a stale fixed-height viewport (for example 193pt).
+    // Do not use it to clip the custom group panel; reserve space using the live Dock position.
+    CGFloat bottom = WCDockReservedBottom(host);
+'''
+          if old not in s:
+              raise SystemExit('expected group-panel height clamp not found; refusing to build')
+          p.write_text(s.replace(old, new, 1))
+          PY
+          grep -q 'Do not use it to clip the custom group panel' build-src/WCTheme/src/WCGroup.mm
+          sed -i 's/^Version:.*/Version: 1.8.6~dev2/' build-src/WCTheme/layout/DEBIAN/control
+          grep -q '^Version: 1.8.6~dev2          grep -q '^Version: 1.8.6~dev2$' build-src/WCTheme/layout/DEBIAN/control
           cat build-src/WCTheme/layout/DEBIAN/control
           for script in preinst postinst prerm postrm; do
             if [ -f "build-src/WCTheme/layout/DEBIAN/$script" ]; then chmod 0755 "build-src/WCTheme/layout/DEBIAN/$script"; fi
@@ -43,7 +61,29 @@ jobs:
       - name: Upload DEB
         uses: actions/upload-artifact@v4
         with:
-          name: WCTheme-1.8.6-dev1-rootless
+          name: WCTheme-1.8.6-dev2-rootless
+          path: build-src/WCTheme/packages/*.deb
+          if-no-files-found: error
+          retention-days: 30
+ build-src/WCTheme/layout/DEBIAN/control
+          grep -q '^Version: 1.8.6~dev2$' build-src/WCTheme/layout/DEBIAN/control
+          cat build-src/WCTheme/layout/DEBIAN/control
+          for script in preinst postinst prerm postrm; do
+            if [ -f "build-src/WCTheme/layout/DEBIAN/$script" ]; then chmod 0755 "build-src/WCTheme/layout/DEBIAN/$script"; fi
+          done
+          echo "PROJECT_DIR=$GITHUB_WORKSPACE/build-src/WCTheme" >> "$GITHUB_ENV"
+      - name: Build Rootless package
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          make clean || true
+          make package FINALPACKAGE=1
+          find packages -maxdepth 1 -name '*.deb' -type f -print -exec ls -lh {} \;
+          test -n "$(find packages -maxdepth 1 -name '*.deb' -type f -print -quit)"
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: WCTheme-1.8.6-dev2-rootless
           path: build-src/WCTheme/packages/*.deb
           if-no-files-found: error
           retention-days: 30
