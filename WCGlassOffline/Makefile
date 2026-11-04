@@ -6,7 +6,7 @@ INSTALL_TARGET_PROCESSES = WeChat
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = WCGlassOffline
-WCGlassOffline_FILES = Tweak.xm WGGlassEngine.m WGSettings.m
+WCGlassOffline_FILES = Tweak.xm WGGlassEngine.m WGSettings.m WGMorphingTabBar.m
 WCGlassOffline_CFLAGS = -fobjc-arc
 WCGlassOffline_FRAMEWORKS = UIKit QuartzCore
 
