@@ -7,10 +7,18 @@
     %orig;
     if (self.window) WGApplyGlassEffect(self);
 }
+- (void)layoutSubviews {
+    %orig;
+    if (self.window) WGApplyGlassEffect(self);
+}
 %end
 
 %hook UITabBar
 - (void)didMoveToWindow {
+    %orig;
+    if (self.window) WGApplyGlassEffect(self);
+}
+- (void)layoutSubviews {
     %orig;
     if (self.window) WGApplyGlassEffect(self);
 }
