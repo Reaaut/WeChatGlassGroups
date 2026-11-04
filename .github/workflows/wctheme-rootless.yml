@@ -30,6 +30,14 @@ jobs:
           unzip -q "$ARCHIVE" -d build-src
           test -f build-src/WCTheme/Makefile
           test -f build-src/WCTheme/layout/DEBIAN/control
+          # ZIP preserves maintainer scripts as mode 0600; dpkg requires executable scripts.
+          for script in preinst postinst prerm postrm; do
+            if [ -f "build-src/WCTheme/layout/DEBIAN/$script" ]; then
+              chmod 0755 "build-src/WCTheme/layout/DEBIAN/$script"
+            fi
+          done
+          echo "DEBIAN maintainer script modes:"
+          find build-src/WCTheme/layout/DEBIAN -maxdepth 1 -type f -exec stat -c '%a %n' {} \;
           echo "PROJECT_DIR=$GITHUB_WORKSPACE/build-src/WCTheme" >> "$GITHUB_ENV"
           echo "Source files:"
           find build-src/WCTheme -maxdepth 2 -type f | sort | head -80
