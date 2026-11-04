@@ -578,6 +578,7 @@ static UIColor *WGGColorForName(NSString *name) {
         _glassEffect.frame = _capsule.bounds;
         _glassEffect.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         _glassEffect.layer.cornerRadius = 14.0;
+        _glassEffect.layer.cornerCurve = kCACornerCurveContinuous;
         _glassEffect.clipsToBounds = YES;
         _glassEffect.contentView.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.18];
         [_capsule addSubview:_glassEffect];
@@ -592,6 +593,8 @@ static UIColor *WGGColorForName(NSString *name) {
         _shineLayer.locations = @[@0.0, @0.42, @1.0];
         _shineLayer.startPoint = CGPointMake(0.5, 0.0);
         _shineLayer.endPoint = CGPointMake(0.5, 1.0);
+        _shineLayer.cornerRadius = 14.0;
+        _shineLayer.masksToBounds = YES;
         [_capsule.layer addSublayer:_shineLayer];
 
         _lowerSheenLayer = [CAGradientLayer layer];
@@ -602,6 +605,8 @@ static UIColor *WGGColorForName(NSString *name) {
         _lowerSheenLayer.locations = @[@0.35, @1.0];
         _lowerSheenLayer.startPoint = CGPointMake(0.5, 0.0);
         _lowerSheenLayer.endPoint = CGPointMake(0.5, 1.0);
+        _lowerSheenLayer.cornerRadius = 14.0;
+        _lowerSheenLayer.masksToBounds = YES;
         [_capsule.layer addSublayer:_lowerSheenLayer];
 
         [self.contentView addSubview:_capsule];
