@@ -110,78 +110,66 @@ jobs:
       - name: Build package
         run: |
           set +e
+          cd "$GITHUB_WORKSPACE"
           MAKE="${MAKE_BIN:-make}"
+          echo "工作目录: $PWD"
           echo "使用: $MAKE"
           "$MAKE" --version 2>&1 | head -n 1
-
-          cd WeChatGlassGroups
+          rm -rf packages
           echo "=== 开始编译 ==="
-          "$MAKE" package FINALPACKAGE=1 DEBUG=0 2>&1 | tee ../build_output.txt
+          "$MAKE" package FINALPACKAGE=1 DEBUG=0 2>&1 | tee "$GITHUB_WORKSPACE/build_output.txt"
           STATUS=${PIPESTATUS[0]}
           echo "=== make 退出码: $STATUS ==="
-
           if [ "$STATUS" -ne 0 ]; then
-            emit() {
-              local line="$1"
+            tail -n 50 "$GITHUB_WORKSPACE/build_output.txt" | while IFS= read -r line; do
               line="${line//'%'/'%25'}"
-              line="${line//$'\r'/'%0D'}"
-              line="${line//$'\n'/'%0A'}"
+              line="${line//$'\\r'/'%0D'}"
+              line="${line//$'\\n'/'%0A'}"
               echo "::error::$line"
-            }
-            emit "make 失败，退出码 $STATUS。===== 最后 40 行 ====="
-            tail -n 40 ../build_output.txt | while IFS= read -r line; do emit "$line"; done
-            emit "===== 全日志中的 error 相关行 ====="
-            grep -n -i -E 'error|no such file|command not found|not found|failed|invalid|denied' ../build_output.txt \
-              | tail -n 30 | while IFS= read -r line; do emit "$line"; done
+            done
             exit 1
           fi
-          exit 0
-
       # 校验是否真的产出了 deb 和正确架构的 dylib
       - name: Verify build output
-        if: always()
+        if: success()
         run: |
-          set +e
-          echo "=== 找 dylib ==="
-          find WeChatGlassGroups/.theos -name '*.dylib' 2>/dev/null || echo "没有 dylib"
-          echo "=== 找 deb ==="
-          ls -la WeChatGlassGroups/packages 2>/dev/null || echo "没有 packages 目录"
-          DYLIB="$(find WeChatGlassGroups/.theos -name 'WeChatGlassGroups.dylib' 2>/dev/null | head -n1)"
-          if [ -n "$DYLIB" ]; then
-            echo "--- 架构（期望 arm64e）---"
-            lipo -archs "$DYLIB"
-            echo "--- 链接的库 ---"
-            otool -L "$DYLIB"
-          fi
-          exit 0
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          echo "=== 检查 arm64e dylib ==="
+          DYLIB="$(find .theos -type f -name 'WeChatGlassGroups.dylib' 2>/dev/null | head -n 1)"
+          test -n "$DYLIB" || { echo "::error::没有找到编译后的 WeChatGlassGroups.dylib"; exit 1; }
+          lipo -archs "$DYLIB"
+          lipo -archs "$DYLIB" | grep -q 'arm64e' || { echo "::error::dylib 不含 arm64e"; exit 1; }
+          echo "=== 检查本次生成的 DEB ==="
+          set -- packages/*.deb
+          test -f "$1" || { echo "::error::packages/ 中没有新 DEB"; exit 1; }
+          test "$#" -eq 1 || { echo "::error::本次构建生成了多个 DEB，拒绝误发"; exit 1; }
+          DEB="$1"
+          VERSION="$(dpkg-deb -f "$DEB" Version)"
+          ARCH="$(dpkg-deb -f "$DEB" Architecture)"
+          echo "DEB=$DEB VERSION=$VERSION ARCH=$ARCH"
+          test "$VERSION" = "0.4.5" || { echo "::error::版本不匹配：$VERSION"; exit 1; }
+          CONTROL="$(dpkg-deb -f "$DEB")"
+          INSTALLED_SIZE_COUNT="$(printf '%s\\n' "$CONTROL" | awk -F': ' '$1=="Installed-Size"{n++} END{print n+0}')"
+          test "$INSTALLED_SIZE_COUNT" -eq 1 || { echo "::error::Installed-Size 字段数量异常：$INSTALLED_SIZE_COUNT"; exit 1; }
+          dpkg-deb -c "$DEB" | grep -E 'var/jb/Library/MobileSubstrate/DynamicLibraries/WeChatGlassGroups\\.dylib$' >/dev/null || {
+            echo "::error::DEB 内缺少 Rootless 动态库安装路径"
+            exit 1
+          }
+          echo "DEB 校验通过：$DEB"
 
       # 全仓库搜索 .deb（Theos 不同版本/不同 scheme 放的位置不一样），
       # 找到就统一拷贝到 out/。找不到就报错并 dump 目录树，方便排查。
       - name: Collect deb
         if: success()
         run: |
-          set +e
+          set -e
           mkdir -p out
-          find . -name '*.deb' -type f 2>/dev/null | while IFS= read -r f; do
-            echo "找到 deb: $f"
-            cp "$f" out/
-          done
-          echo "--- out 目录 ---"
-          ls -la out
-          if [ -z "$(ls -A out 2>/dev/null)" ]; then
-            {
-              echo "out 是空的！全仓库没有 .deb"
-              echo "--- 工程目录树（前 60 行）---"
-              ls -laR WeChatGlassGroups 2>/dev/null | head -n 60
-            } | while IFS= read -r line; do
-              line="${line//'%'/'%25'}"
-              line="${line//$'\r'/'%0D'}"
-              line="${line//$'\n'/'%0A'}"
-              echo "::error::$line"
-            done
-            exit 1
-          fi
-          exit 0
+          set -- packages/*.deb
+          test -f "$1" || { echo "::error::没有可上传的新 DEB"; exit 1; }
+          test "$#" -eq 1 || { echo "::error::检测到多个 DEB，停止上传"; exit 1; }
+          cp "$1" out/
+          ls -lh out/
 
       # 把 deb 提交回仓库 dist/ 目录 —— 用户直接从 GitHub 网页下载，
       # 不依赖 Artifacts（Artifacts 必须登录 GitHub 才能下载）。
@@ -195,25 +183,23 @@ jobs:
       - name: Commit deb to repo
         if: success()
         run: |
-          set +e
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          DEB_FILE="$(find out -maxdepth 1 -type f -name '*.deb' | head -n 1)"
+          test -n "$DEB_FILE" || { echo "::error::out/ 中没有 DEB"; exit 1; }
+          DEB_NAME="$(basename "$DEB_FILE")"
           mkdir -p dist
-          cp out/*.deb dist/ 2>/dev/null
-          echo "--- 待提交的 dist ---"
-          ls -la dist
-          git config user.name  "github-actions[bot]"
+          cp "$DEB_FILE" "dist/$DEB_NAME"
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f dist
+          git add -f "dist/$DEB_NAME"
           if git diff --cached --quiet; then
-            echo "dist 没有变化，跳过提交"
-            exit 0
+            echo "::error::新 DEB 与仓库现有文件完全相同，拒绝伪报更新"
+            exit 1
           fi
-          git commit -m "build: 更新 deb [skip ci]"
-          if git push origin HEAD:main 2>&1; then
-            echo "✅ deb 已提交到 dist/，可从仓库网页直接下载（无需登录）"
-          else
-            echo "::error::推送 dist 失败。请去仓库 Settings → Actions → General → Workflow permissions 选 Read and write permissions，然后重新跑一次"
-          fi
-          exit 0
+          git commit -m "build: publish $DEB_NAME [skip ci]"
+          git push origin HEAD:main
+          echo "已发布：dist/$DEB_NAME"
 
       - name: Upload deb
         if: success()
