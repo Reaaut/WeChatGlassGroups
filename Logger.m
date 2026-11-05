@@ -15,6 +15,15 @@ static const long kLogKeepBytes     = 256 * 1024;
 
 // 解析出来的最终路径（dispatch_once 写入，之后只读）
 static NSString *gLogPath = nil;
+static NSObject *gLogLock = nil;
+
+static void WGGEnsureLogSetup(void) {
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gLogLock = [[NSObject alloc] init];
+        WGGLogSetup();
+    });
+}
 
 /// 依次尝试的候选路径（返回数组里第一个能写成功的）。
 static NSArray<NSString *> *WGGLogPathCandidates(void) {
@@ -68,11 +77,9 @@ static void WGGLogSetup(void) {
 }
 
 void WGGFileLogAppend(NSString *line) {
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        WGGLogSetup();
-    });
+    WGGEnsureLogSetup();
     if (!gLogPath || !line.length) return;
+    @synchronized (gLogLock) {
 
     // 加时间戳。用 dispatch_time 的 wall time 拿当前时刻
     static NSDateFormatter *fmt = nil;
@@ -113,19 +120,27 @@ void WGGFileLogAppend(NSString *line) {
     NSData *data = [out dataUsingEncoding:NSUTF8StringEncoding];
     if (data) [fh writeData:data];
     [fh closeFile];
+    }
 }
 
 NSString *WGGFileLogContents(void) {
-    if (!gLogPath) return nil;
-    return [NSString stringWithContentsOfFile:gLogPath
-                                     encoding:NSUTF8StringEncoding error:NULL];
+    WGGEnsureLogSetup();
+    @synchronized (gLogLock) {
+        if (!gLogPath) return nil;
+        return [NSString stringWithContentsOfFile:gLogPath
+                                         encoding:NSUTF8StringEncoding error:NULL];
+    }
 }
 
 void WGGFileLogClear(void) {
-    if (!gLogPath) return;
-    [@"" writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    WGGEnsureLogSetup();
+    @synchronized (gLogLock) {
+        if (!gLogPath) return;
+        [@"" writeToFile:gLogPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    }
 }
 
 NSString *WGGFileLogPath(void) {
-    return gLogPath;
+    WGGEnsureLogSetup();
+    @synchronized (gLogLock) { return gLogPath; }
 }
