@@ -1105,7 +1105,9 @@ static void WGGInstallLiquidBackground(UITableView *tv) {
 // ===========================================================================
 %ctor {
     @autoreleasepool {
-        WGGLogMessage(@"WeChatGlassGroups v0.4.4 loaded（WCGlass 同款全量防线：swipe/edit/contextMenu/visibleRows 全拦）");
+        WGGLogMessage(@"WeChatGlassGroups v0.4.6 SAFE DIAGNOSTIC loaded");
+        NSString *wechatVersion = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown";
+        WGGLogMessage([NSString stringWithFormat:@"启动环境：WeChat=%@ iOS=%@ device=%@", wechatVersion, [UIDevice currentDevice].systemVersion, [UIDevice currentDevice].model]);
 
         // 运行时探测：把真实类名打到 syslog（阶段一的核心产出）
         WGGDiscoveryBootstrap();
