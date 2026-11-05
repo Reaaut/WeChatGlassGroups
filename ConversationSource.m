@@ -18,6 +18,7 @@ static NSString *gPublishedFingerprint = nil;  // +1
 static NSString *gPendingFingerprint = nil;    // +1
 static NSUInteger gPendingCount = 0;
 static BOOL gRetryScheduled = NO;
+static NSUInteger gRetryAttempts = 0;
 static BOOL gRefreshInProgress = NO;
 static NSUInteger gGeneration = 0;
 
@@ -139,9 +140,12 @@ static NSArray *WGGCSCollect(id logic, NSUInteger *readableKeysOut) {
 }
 
 static void WGGCSScheduleRetry(id controller, NSTimeInterval delay) {
-    if (gRetryScheduled || !controller) return;
+    if (gRetryScheduled || !controller || gRetryAttempts >= 8) return;
+    static const NSTimeInterval backoff[] = {0.35, 0.55, 0.85, 1.3, 2.0, 3.0, 4.0, 4.0};
+    NSTimeInterval wait = backoff[gRetryAttempts++];
+    if (delay > wait) wait = delay;
     gRetryScheduled = YES;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         gRetryScheduled = NO;
         [WGGConversationSource conversationsForViewController:controller];
@@ -172,6 +176,7 @@ static void WGGCSScheduleRetry(id controller, NSTimeInterval delay) {
         return nil;
     }
 
+    gRetryAttempts = 0;
     NSUInteger readable = 0;
     NSArray *fresh = WGGCSCollect(logic, &readable);
     if (!fresh) {
