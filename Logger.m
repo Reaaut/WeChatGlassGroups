@@ -16,6 +16,7 @@ static const long kLogKeepBytes     = 256 * 1024;
 // 解析出来的最终路径（dispatch_once 写入，之后只读）
 static NSString *gLogPath = nil;
 static NSObject *gLogLock = nil;
+static void WGGLogSetup(void);
 
 static void WGGEnsureLogSetup(void) {
     static dispatch_once_t once;
