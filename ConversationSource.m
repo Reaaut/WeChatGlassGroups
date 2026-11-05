@@ -200,6 +200,8 @@ static void WGGCSScheduleRetry(id controller, NSTimeInterval delay) {
         WGGCSLog([NSString stringWithFormat:@"stable snapshot published: sessions=%lu readable=%lu generation=%lu",
                   (unsigned long)fresh.count, (unsigned long)readable, (unsigned long)gGeneration]);
         gRefreshInProgress = NO;
+        // 让当前首页立即重新走数据源；如果列表已离开 window，UIKit 会自行忽略。
+        [table reloadData];
         return gPublishedSessions;
     }
 
