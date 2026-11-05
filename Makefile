@@ -45,8 +45,9 @@ WeChatGlassGroups_FILES = Tweak.x GlassGroupPanel.m GroupStore.m SettingsControl
 WeChatGlassGroups_CFLAGS = -I./include
 WeChatGlassGroups_FRAMEWORKS = UIKit Foundation QuartzCore
 
-# 阶段一：打开运行时探测（真机上把类名日志打出来）
-WeChatGlassGroups_CFLAGS += -DWGG_DISCOVERY=1
+# 0.4.6：安全诊断构建。关闭高风险运行时递归探测，并暂时关闭会话列表接管。
+# 日志系统、设置入口和原生微信列表保留，用于先确认注入稳定性。
+WeChatGlassGroups_CFLAGS += -DWGG_SAFE_DIAGNOSTIC=1
 
 # 阶段二：数据源过滤在 Tweak.x 里用 // 注释开关，不要用 -D 宏！
 # 原因：Theos 的 Logos 预处理器不认 #if，用宏开关 %hook 会导致链接错误
