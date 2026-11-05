@@ -262,6 +262,15 @@ static BOOL gHomeGroupingActive = NO;   // 首页分组激活态（定时器防�
 }
 
 + (BOOL)wgg_shouldGroupTableInner:(UITableView *)tableView ofVC:(id)vc {
+#ifdef WGG_SAFE_DIAGNOSTIC
+    // 0.4.6 诊断模式：保留注入与日志，但暂时不接管微信会话列表。
+    // 用于确认启动稳定性，并收集真实设备日志，避免继续让虚拟行索引触发微信内部越界。
+    static dispatch_once_t diagnosticOnce;
+    dispatch_once(&diagnosticOnce, ^{
+        WGGLogMessage(@"SAFE_DIAGNOSTIC=1：会话列表接管已关闭，当前使用微信原生列表");
+    });
+    return NO;
+#endif
     if (!tableView || !vc) return NO;
     WGGGroupStore *store = [WGGGroupStore shared];
     if (!store.enabled) return NO;
