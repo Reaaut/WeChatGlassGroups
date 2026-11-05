@@ -20,7 +20,7 @@ static NSUInteger gPendingCount = 0;
 static BOOL gRetryScheduled = NO;
 static BOOL gRefreshInProgress = NO;
 static NSUInteger gGeneration = 0;
-static __weak id gObservedController = nil;
+
 
 static void WGGCSLog(NSString *message) {
     if ([message length]) WGGLogMessage([@"[SessionSource] " stringByAppendingString:message]);
@@ -141,12 +141,10 @@ static NSArray *WGGCSCollect(id logic, NSUInteger *readableKeysOut) {
 static void WGGCSScheduleRetry(id controller, NSTimeInterval delay) {
     if (gRetryScheduled || !controller) return;
     gRetryScheduled = YES;
-    gObservedController = controller;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         gRetryScheduled = NO;
-        id current = gObservedController;
-        if (current) [WGGConversationSource conversationsForViewController:current];
+        [WGGConversationSource conversationsForViewController:controller];
     });
 }
 
