@@ -148,7 +148,7 @@ jobs:
           VERSION="$(dpkg-deb -f "$DEB" Version)"
           ARCH="$(dpkg-deb -f "$DEB" Architecture)"
           echo "DEB=$DEB VERSION=$VERSION ARCH=$ARCH"
-          test "$VERSION" = "0.4.5" || { echo "::error::版本不匹配：$VERSION"; exit 1; }
+          test "$VERSION" = "0.4.6" || { echo "::error::版本不匹配：$VERSION"; exit 1; }
           CONTROL="$(dpkg-deb -f "$DEB")"
           INSTALLED_SIZE_COUNT="$(echo "$CONTROL" | awk '/^Installed-Size:/{n++} END{print n+0}')"
           test "$INSTALLED_SIZE_COUNT" -eq 1 || { echo "::error::Installed-Size 字段数量异常：$INSTALLED_SIZE_COUNT"; exit 1; }
